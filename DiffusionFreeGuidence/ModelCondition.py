@@ -6,6 +6,9 @@ import torch
 from torch import nn
 from torch.nn import init
 from torch.nn import functional as F
+from torch.nn import init
+from torch.functional import F
+
 
 
 def drop_connect(x, drop_ratio):
@@ -118,7 +121,7 @@ class AttnBlock(nn.Module):
 
 
 
-class ResBlock(nn.Module):
+class ResBlock_old(nn.Module):
     def __init__(self, in_ch, out_ch, tdim, dropout, attn=True):
         super().__init__()
         self.block1 = nn.Sequential(
@@ -160,6 +163,52 @@ class ResBlock(nn.Module):
         h = self.attn(h)
         return h
 
+class ResBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, tdim, dropout, attn=True):
+        super().__init__()
+        self.block1 = nn.Sequential(
+            nn.GroupNorm(32, in_ch),
+            Swish(),
+            nn.Conv2d(in_ch, out_ch, 3, stride=1, padding=1),
+        )
+        self.temb_proj = nn.Sequential(
+            Swish(),
+            nn.Linear(tdim, out_ch),
+        )
+        self.cond_proj = nn.Sequential(
+            Swish(),
+            nn.Linear(tdim, out_ch),
+        )
+        self.block2 = nn.Sequential(
+            nn.GroupNorm(32, out_ch),
+            Swish(),
+            nn.Dropout(dropout),
+            nn.Conv2d(out_ch, out_ch, 3, stride=1, padding=1),
+        )
+
+        self.attn = nn.MultiheadAttention(out_ch, num_heads=8) if attn else nn.Identity()
+
+        if in_ch != out_ch:
+            self.shortcut = nn.Conv2d(in_ch, out_ch, 1, stride=1, padding=0)
+        else:
+            self.shortcut = nn.Identity()
+
+    def forward(self, x, temb, cemb=None):
+        h = self.block1(x)
+        h += self.temb_proj(temb)[:, :, None, None]
+        if cemb is not None:
+            h += self.cond_proj(cemb)[:, :, None, None]
+        h = self.block2(h)
+        h = h + self.shortcut(x)
+        
+        if isinstance(self.attn, nn.MultiheadAttention):
+            batch, channels, height, width = h.shape
+            h_reshaped = h.view(batch, channels, -1).permute(2, 0, 1)  # (seq_len, batch, channels)
+            h_attn, _ = self.attn(h_reshaped, h_reshaped, h_reshaped)
+            h = h_attn.permute(1, 2, 0).view(batch, channels, height, width)
+        else:
+            h = self.attn(h)
+        return h
 
 class UNet(nn.Module):
     def __init__(self, T, num_labels, ch, ch_mult, num_res_blocks, dropout):
@@ -225,7 +274,106 @@ class UNet(nn.Module):
 
         assert len(hs) == 0
         return h
+    
 
+
+class DynamicUNet(nn.Module):
+    def __init__(self, T, num_labels, ch, ch_mult, num_res_blocks, dropout, attn):
+        super().__init__()
+        self.attn = attn
+        tdim = ch * 4
+        self.time_embedding = TimeEmbedding(T, ch, tdim)
+        self.cond_embedding = ConditionalEmbedding(num_labels, ch, tdim)
+
+        ## Layers
+        self.head = nn.Conv2d(3, ch, kernel_size=3, stride=1, padding=1)
+        self.downblocks, self.chs, self.now_ch = self.create_downblocks(ch, ch_mult, num_res_blocks, tdim, dropout)
+        self.middleblocks = self.create_middleblocks(self.now_ch, tdim, dropout)
+        self.upblocks = self.create_upblocks(ch, ch_mult, num_res_blocks, tdim, dropout)
+
+        self.tail = nn.Sequential(
+            nn.GroupNorm(32, ch),
+            Swish(),
+            nn.Conv2d(ch, 3, kernel_size=3, stride=1, padding=1)
+        )
+        self.initialize()
+
+    def initialize(self):
+        init.xavier_uniform_(self.head.weight)
+        init.zeros_(self.head.bias)
+        init.xavier_uniform_(self.tail[-1].weight, gain=1e-5)
+        init.zeros_(self.tail[-1].bias)
+
+    def create_downblocks(self, ch, ch_mult, num_res_blocks, tdim, dropout):
+        downblocks = nn.ModuleList()
+        chs = [ch]
+        now_ch = ch
+
+        for i, mult in enumerate(ch_mult):
+            out_ch = ch * mult
+            for _ in range(num_res_blocks):
+                downblocks.append(ResBlock(in_ch=now_ch, out_ch=out_ch, tdim=tdim, dropout=dropout, attn=self.attn))
+                now_ch = out_ch
+                chs.append(now_ch)
+            if i != len(ch_mult) - 1:
+                downblocks.append(DownSample(now_ch))
+                chs.append(now_ch)
+        return downblocks, chs, now_ch
+
+    def create_middleblocks(self, now_ch, tdim, dropout):
+        return nn.ModuleList([
+            ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
+            ResBlock(now_ch, now_ch, tdim, dropout, attn=False)
+        ])
+
+    def create_upblocks(self, ch, ch_mult, num_res_blocks, tdim, dropout):
+        upblocks = nn.ModuleList()
+        chs = self.chs.copy()
+        now_ch = self.now_ch
+
+        for i, mult in reversed(list(enumerate(ch_mult))):
+            out_ch = ch * mult
+            for _ in range(num_res_blocks):
+                upblocks.append(ResBlock(in_ch=chs.pop() + now_ch, out_ch=out_ch, tdim=tdim, dropout=dropout, attn=self.attn))
+                now_ch = out_ch
+            if i != 0:
+                upblocks.append(UpSample(now_ch))
+        return upblocks
+
+    def forward(self, x, t, labels):
+        temb = self.time_embedding(t)
+        cemb = self.cond_embedding(labels)
+
+        # Downsampling
+        h = self.head(x)
+        hs = [h]  # Armazena saída inicial
+        for layer in self.downblocks:
+            h = layer(h, temb, cemb)
+            hs.append(h)  # Salva a saída de cada camada
+
+        # Middle
+        for layer in self.middleblocks:
+            h = layer(h, temb, cemb)
+
+        # Upsampling
+        for layer in self.upblocks:
+            if isinstance(layer, ResBlock):
+                # Garante que sempre existe um tensor para concatenar
+                assert len(hs) > 0, "A lista `hs` está vazia antes do esperado."
+
+                # Remove o último tensor de `hs` e ajusta o tamanho, se necessário
+                skip_h = hs.pop()
+                if h.shape[2:] != skip_h.shape[2:]:
+                    skip_h = F.interpolate(skip_h, size=h.shape[2:], mode="nearest")
+
+                h = torch.cat([h, skip_h], dim=1)
+            h = layer(h, temb, cemb)
+
+        # # Garantia final
+        # print(f"Elementos restantes em hs: {len(hs)}")
+        # assert len(hs) == 0, f"A lista `hs` contém {len(hs)} elementos restantes no final do Upsampling."
+
+        return self.tail(h)
 
 if __name__ == '__main__':
     batch_size = 8

@@ -14,7 +14,13 @@ import glob
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as F
 
+###############################################
+### Funções de utilidade para o treinamento ###
+###############################################
 
+#######################################
+### Carregamento de dados e dataset ###
+#######################################
 def list_images(directory):
     """
     Lists all images in the given directory with extensions .png or .jpg.
@@ -81,8 +87,8 @@ Fazer o load dos dados anotados para as metricas posteriormente.
 
 
 """
-
-def load_EUVP_paths(dataset_path = "data/EUVP",split=False): #errado Arrumar, usar apenas as imagens do treino A
+# nao sera usado
+def load_EUVP_paths(dataset_path = "data/EUVP",split=False): #errado Arrumar, usar apenas as imagens do treino A 
      # Inicializa as listas para os caminhos das imagens
     train_img = []
     test_img = []
@@ -120,6 +126,24 @@ def load_HDR_paths(dataset_path="data/HDR+ Burst_20171106_subset", task="train",
     imgs.extend(glob.glob(os.path.join(dataset_path, "gallery_20171023", "*.jpg")))
 
     return split_data(imgs)
+def load_HDR_paths_annt(dataset_path="data/HDR+ Burst_20171106_subset", task="train", split=False):
+    """
+    Carrega os caminhos das imagens do dataset HDR+.
+
+    Parâmetros:
+        dataset_path (str): Caminho base para o dataset HDR+.
+        task (str): Tarefa a ser executada (não utilizada diretamente neste código).
+        split (bool): Indica se o split de treino/validação deve ser retornado.
+
+    Retorna:
+        tuple: Listas com caminhos para treino, teste e validação.
+    """
+
+    # Localiza todas as imagens no dataset
+    imgs = []
+    imgs.extend(glob.glob(os.path.join(dataset_path, "results_20161014","*", "*.jpg")))
+
+    return split_data(imgs)
 
 def load_HICRD_paths(dataset_path = "data/HICRD", task="train",split=False):
     train_img = []
@@ -132,12 +156,30 @@ def load_HICRD_paths(dataset_path = "data/HICRD", task="train",split=False):
 
     return split_data(train_img)
 
+def load_HICRD_paths_annt(dataset_path = "data/HICRD", task="train",split=False):
+    train_img = []
+    #test_img = []
+    
+    train_img.extend(glob.glob(os.path.join(dataset_path, "trainB_paired", "*.png")))
+    #test_img.extend(glob.glob(os.path.join(dataset_path, "trainB_paired", "*.png")))
+
+    #print(f"Total de imagens encontradas: {len(train_img) , len(test_img)}")
+
+    return split_data(train_img)
+
 
 def load_LSUI_paths(dataset_path = "data/LSUI", task="train",split=False):
     train_img = []
     #test_img = []
     
     train_img.extend(glob.glob(os.path.join(dataset_path, "input", "*.jpg")))
+
+    return split_data(train_img)
+def load_LSUI_paths_annt(dataset_path = "data/LSUI", task="train",split=False):
+    train_img = []
+    #test_img = []
+    
+    train_img.extend(glob.glob(os.path.join(dataset_path, "GT", "*.jpg")))
 
     return split_data(train_img)
 
@@ -159,6 +201,13 @@ def load_UIEB_paths(dataset_path = "data/UIEB", task="train",split=False):
     return split_data(train_img)
 
 def load_RUIE_paths(dataset_path = "data/RUIE", task="train",split=False):
+    train_img = []
+    #test_img = []
+    
+    train_img.extend(glob.glob(os.path.join(dataset_path,"*","train", "*.jpg")))
+
+    return split_data(train_img)
+def load_RUIE_paths_annt(dataset_path = "data/RUIE", task="val",split=False):
     train_img = []
     #test_img = []
     
@@ -188,12 +237,13 @@ def load_image(image_path):
     return image
 
     
-    
+#Adaptar datasets para carregar treino e teste imagens dependo do dataset escolhido
 class Atmospheric_Dataset(data.Dataset):
-    def __init__(self, atmospheric_dataset_name: str, batch_size:int = 8, transforms=None, task: str = "train"):
+    def __init__(self, atmospheric_dataset_name: str, batch_size:int = 8, transforms=None, task: str = "train", supervised: bool = False):
         self.dataset_name = atmospheric_dataset_name
         self.batch_size = batch_size
         self.task =task
+        self.supervised = supervised
 
         # Define transformations
         if transforms is None:
@@ -210,14 +260,15 @@ class Atmospheric_Dataset(data.Dataset):
         self._load_datasets()
         
     def _load_datasets(self):
-
+        # Load dataset paths based on the dataset name
         #Atmospheric Dataset
         if self.dataset_name == "HDR+":
             self.train_img_a, self.test_img_a, self.val_img_a = load_HDR_paths()
-        elif self.dataset_name == "TM-DIED":
+            self.train_img_b, self.test_img_b, self.val_img_b = load_HDR_paths_annt()
+        elif self.dataset_name == "TM-DIED":# nao tem dados anotados logo serao usados os mesmos dados de entrada para treino e teste
             self.train_img_a, self.test_img_a, self.val_img_a = load_TM_DIED_paths()
-        
-                       
+            self.train_img_b, self.test_img_b, self.val_img_b = load_TM_DIED_paths()
+     
     def __len__(self):
         #Seleciona o tamanho do dataset a ser usado baseado na combinação escolhida
         if self.task == "train":
@@ -228,23 +279,43 @@ class Atmospheric_Dataset(data.Dataset):
             return len(self.val_img_a)
 
     def __getitem__(self, idx):
-        if self.task == "train":
-            img_path_a = self.train_img_a[idx]
-            img= self.transform(image=load_image(img_path_a))  # Implement `load_image` to load an image from a file path
-        elif self.task == "test":
-            img_path_a = self.test_img_a[idx]
-            img= self.transform(image=load_image(img_path_a)) 
+        # Retorna as imagens de treino e teste relativo ao treino nao supervisionado e supervisionado
+        if self.supervised:
+            if self.task == "train":
+                img_path_a = self.train_img_a[idx]
+                img_path_b = self.train_img_b[idx]
+                img_a= self.transform(image=load_image(img_path_a))
+                img_b= self.transform(image=load_image(img_path_b))
+            elif self.task == "test":
+                img_path_a = self.test_img_a[idx]
+                img_path_b = self.test_img_b[idx]
+                img_a= self.transform(image=load_image(img_path_a))
+                img_b= self.transform(image=load_image(img_path_b))
+            else:
+                img_path_a = self.val_img_a[idx]
+                img_path_b = self.val_img_b[idx]
+                img_a= self.transform(image=load_image(img_path_a))
+                img_b= self.transform(image=load_image(img_path_b))
+            return img_a["image"], img_b["image"]
         else:
-            img_path_a = self.val_img_a[idx]
-            img= self.transform(image=load_image(img_path_a)) 
-        return img["image"]
+            if self.task == "train":
+                img_path_a = self.train_img_a[idx]
+                img= self.transform(image=load_image(img_path_a))  # Implement `load_image` to load an image from a file path
+            elif self.task == "test":
+                img_path_a = self.test_img_a[idx]
+                img= self.transform(image=load_image(img_path_a)) 
+            else:
+                img_path_a = self.val_img_a[idx]
+                img= self.transform(image=load_image(img_path_a)) 
+            return img["image"]
 
-    
+#modificar dataset para treino e tesete # impementar flag de suervisao para carregar os dados anotados
 class Underwater_Dataset(data.Dataset):
-    def __init__(self, underwater_dataset_name: str ,  transforms=None, task: str = "train"):
+    def __init__(self, underwater_dataset_name: str ,  transforms=None, task: str = "train", supervised: bool = False):
         self.underwater_dataset_name = underwater_dataset_name
         self.transform = transforms
         self.task =task
+        self.supervised = supervised
 
         # Define transformations
         if transforms is None:
@@ -256,24 +327,29 @@ class Underwater_Dataset(data.Dataset):
             )
         else:
             self.transform = transforms
-
         # Load dataset paths based on the dataset name
+        self._load_datasets()
+       
+    def _load_datasets(self):
         #Underwater datasets
         if self.underwater_dataset_name == "HICRD":
-            self.train_img_u, self.test_img_u, self.val_img_u = load_HICRD_paths()
+            self.train_img_a, self.test_img_a, self.val_img_a = load_HICRD_paths()
+            self.train_img_b, self.test_img_b, self.val_img_b = load_HICRD_paths_annt()
         elif self.underwater_dataset_name == "LSUI":
             self.train_img_u, self.test_img_u, self.val_img_u = load_LSUI_paths()
-        elif self.underwater_dataset_name == "UIEB":
+            self.train_img_b, self.test_img_b, self.val_img_b = load_LSUI_paths_annt()
+        elif self.underwater_dataset_name == "UIEB":# nao tem dados anotados logo serao usados os mesmos dados de entrada para treino e teste
             self.train_img_u, self.test_img_u, self.val_img_u = load_UIEB_paths()
+            self.train_img_b, self.test_img_b, self.val_img_b = load_UIEB_paths()
         elif self.underwater_dataset_name == "RUIE":
             self.train_img_u, self.test_img_u, self.val_img_u = load_RUIE_paths()
-        elif self.underwater_dataset_name == "EUVP":
-            self.train_img_u, self.test_img_u, self.val_img_u = load_EUVP_paths()
+            self.train_img_b, self.test_img_b, self.val_img_b = load_RUIE_paths_annt()
+        #elif self.underwater_dataset_name == "EUVP":
+        #    self.train_img_u, self.test_img_u, self.val_img_u = load_EUVP_paths()
         else:
             raise ValueError(
                 f"Dataset {self.underwater_dataset_name} not found. Choose between 'EUVP', 'HDR+', 'HICRD', 'LSUI', 'TM-DIED', 'UIEB' or 'RUIE'"
             )
-
     def __len__(self):
         #Seleciona o tamanho do dataset a ser usado baseado na combinação escolhida
         if self.task == "train":
@@ -285,18 +361,35 @@ class Underwater_Dataset(data.Dataset):
 
     
     def __getitem__(self, idx):
-        if self.task == "train":
-            img_path_a = self.train_img_u[idx]
-            img= self.transform(image=load_image(img_path_a))  # Implement `load_image` to load an image from a file path
-            
-        elif self.task == "test":
-            img_path_a = self.test_img_u[idx]
-            img= self.transform(image=load_image(img_path_a))
-            
+        # Retorna as imagens de treino e teste relativo ao treino nao supervisionado e supervisionado
+        if self.supervised:
+            if self.task == "train":
+                img_path_a = self.train_img_a[idx]
+                img_path_b = self.train_img_b[idx]
+                img_a= self.transform(image=load_image(img_path_a))
+                img_b= self.transform(image=load_image(img_path_b))
+            elif self.task == "test":
+                img_path_a = self.test_img_a[idx]
+                img_path_b = self.test_img_b[idx]
+                img_a= self.transform(image=load_image(img_path_a))
+                img_b= self.transform(image=load_image(img_path_b))
+            else:
+                img_path_a = self.val_img_a[idx]
+                img_path_b = self.val_img_b[idx]
+                img_a= self.transform(image=load_image(img_path_a))
+                img_b= self.transform(image=load_image(img_path_b))
+            return img_a["image"], img_b["image"]
         else:
-            img_path_a = self.val_img_u[idx]
-            img= self.transform(image=load_image(img_path_a)) 
-        return img["image"]
+            if self.task == "train":
+                img_path_a = self.train_img_a[idx]
+                img= self.transform(image=load_image(img_path_a))  # Implement `load_image` to load an image from a file path
+            elif self.task == "test":
+                img_path_a = self.test_img_a[idx]
+                img= self.transform(image=load_image(img_path_a)) 
+            else:
+                img_path_a = self.val_img_a[idx]
+                img= self.transform(image=load_image(img_path_a)) 
+            return img["image"]
     
 
 def plot_images_from_dataloader(dataloader, num_images=8):
@@ -333,6 +426,8 @@ def plot_images_from_dataloader(dataloader, num_images=8):
     
     plt.tight_layout()
     plt.show()
+
+
 
 
 
