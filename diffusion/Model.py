@@ -214,6 +214,7 @@ class UNet(nn.Module):
     def __init__(self, T, num_labels, ch, ch_mult, num_res_blocks, dropout):
         super().__init__()
         tdim = ch * 4
+        num_labels = 2
         self.time_embedding = TimeEmbedding(T, ch, tdim)
         self.cond_embedding = ConditionalEmbedding(num_labels, ch, tdim)
         self.head = nn.Conv2d(3, ch, kernel_size=3, stride=1, padding=1)
@@ -283,7 +284,7 @@ class DynamicUNet(nn.Module):
         self.attn = attn
         tdim = ch * 4
         self.time_embedding = TimeEmbedding(T, ch, tdim)
-        self.cond_embedding = ConditionalEmbedding(num_labels, ch, tdim)
+        self.cond_embedding = ConditionalEmbedding(num_labels, ch, tdim)#descobrir o que e o num labels
 
         ## Layers
         self.head = nn.Conv2d(3, ch, kernel_size=3, stride=1, padding=1)
@@ -340,9 +341,15 @@ class DynamicUNet(nn.Module):
                 upblocks.append(UpSample(now_ch))
         return upblocks
 
-    def forward(self, x, t, labels):
+    def forward(self, x, t, labels, context_zero=True):
+        #Time embedding from Diffusion
         temb = self.time_embedding(t)
-        cemb = self.cond_embedding(labels)
+        
+        #No classifier Guidance Part
+        if context_zero:
+            cemb = torch.zeros_like(temb)
+        else:
+            cemb = self.cond_embedding(labels)
 
         # Downsampling
         h = self.head(x)

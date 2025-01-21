@@ -3,30 +3,8 @@ import torch.nn as nn
 import torchvision
 import torch.nn.functional as F
 
-
 ## DINO LOSS FUNCTIONS
-"""
-Dino versions avaiable:
-    #Dino V1
-        vits8 = torch.hub.load('facebookresearch/dino:main', 'dino_vits8') # funcionando
-        vitb8 = torch.hub.load('facebookresearch/dino:main', 'dino_vitb8')
-        vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
-        vitb16 = torch.hub.load('facebookresearch/dino:main', 'dino_vitb16')
-
-    # DINOv2
-        dinov2_vits14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
-        dinov2_vitb14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
-        dinov2_vitl14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14')
-        dinov2_vitg14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitg14')
-
-    # DINOv2 with registers
-        dinov2_vits14_reg = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')
-        dinov2_vitb14_reg = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14_reg')
-        dinov2_vitl14_reg = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
-        dinov2_vitg14_reg = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitg14_reg')
-"""
-
-class PerceptualLoss(nn.Module):
+class PerceptualLoss_dino(nn.Module):
     def __init__(self, model:str="dinov2_vits14",version:str ="dinov2", layers=None, normalize_inputs=False):
         """
         Perceptual loss using DINO or DINOv2 models.
@@ -37,7 +15,7 @@ class PerceptualLoss(nn.Module):
                                   Default is None, which uses all layers.
             normalize_inputs (bool): Whether to normalize inputs to [0, 1].
         """
-        super(PerceptualLoss, self).__init__()
+        super(PerceptualLoss_dino, self).__init__()
 
         # Load DINO model
         if version == "dino":
@@ -144,33 +122,6 @@ class PerceptualLoss(nn.Module):
             loss += nn.functional.smooth_l1_loss(inp_feat, tgt_feat).to('cpu')
         return loss
 
-
-#### Loss previas
-
-
-
-
-# def color_loss(output, gt,mask=None):
-#     img_ref = F.normalize(output, p = 2, dim = 1)
-#     ref_p = F.normalize(gt, p = 2, dim = 1)
-#     if mask!=None:
-#         img_ref=mask*img_ref
-#         ref_p*=mask
-#     loss_cos = 1 - torch.mean(F.cosine_similarity(img_ref, ref_p, dim=1))
-#     # loss_cos = self.mse(img_ref, ref_p)
-#     return loss_cos
-
-# def light_loss(output,gt,mask=None):
-#     #output = torch.mean(output, 1, keepdim=True)
-#     #gt=torch.mean(gt,1,keepdim=True)
-#     output =output[:, 0:1, :, :] * 0.299 + output[:, 1:2, :, :] * 0.587 + output[:, 2:3, :, :] * 0.114
-#     gt = gt[:, 0:1, :, :] * 0.299 + gt[:, 1:2, :, :] * 0.587 + gt[:, 2:3, :, :] * 0.114
-#     if mask != None:
-#         output*=mask
-#         gt*=mask
-#     loss=F.l1_loss(output,gt)
-#     return loss
-
 ###############################################
 
 class color_loss(nn.Module):
@@ -186,21 +137,6 @@ class color_loss(nn.Module):
         loss_cos = 1 - torch.mean(F.cosine_similarity(img_ref, ref_p, dim=1))
         # loss_cos = self.mse(img_ref, ref_p)
         return loss_cos
-
-class light_loss(nn.Module):##pesquisar significado das modificacoes
-    def __init__(self):
-        super(light_loss, self).__init__()
-
-    def forward(self,output,gt,mask=None):
-        #output = torch.mean(output, 1, keepdim=True)
-        #gt=torch.mean(gt,1,keepdim=True)
-        output =output[:, 0:1, :, :] * 0.299 + output[:, 1:2, :, :] * 0.587 + output[:, 2:3, :, :] * 0.114
-        gt = gt[:, 0:1, :, :] * 0.299 + gt[:, 1:2, :, :] * 0.587 + gt[:, 2:3, :, :] * 0.114
-        if mask != None:
-            output*=mask
-            gt*=mask
-        loss=F.l1_loss(output,gt)
-        return loss
 
 ##############################################3
 
@@ -241,58 +177,10 @@ class L_exp(nn.Module):
 
         d = torch.mean(torch.pow(mean- torch.FloatTensor([self.mean_val] ).to(device),2))
         return d
-    
-#adicionar Jdark loss
-class DarkChannelPriorLoss(nn.Module):
-    """
-    patch_size: tamanho do patch para calcular a média
-    """
-    def __init__(self, patch_size):
-        #imitar L_exp com o patch size
-        super(DarkChannelPriorLoss, self).__init__()
-        self.patch_size = patch_size
+ 
 
-    def forward(self, input_image):
-        # Padding to handle border cases
-        padding = self.patch_size // 2
-        padded_image = nn.functional.pad(input_image, (padding, padding, padding, padding), mode='reflect')
+ ##adiionar novas funcoes de perda para o realce
 
-        # Compute the dark channel
-        dark_channel = torch.min(padded_image, dim=1)[0]
-
-        # Take minimum over color channels
-        dark_channel_min = torch.min(dark_channel, dim=1)[0]
-
-        # Take minimum over pixels
-        dark_channel_prior = torch.min(dark_channel_min, dim=1)[0]
-
-        # Take the mean to get a scalar loss value
-        loss = torch.mean(dark_channel_prior)
-
-        return loss
-
-class L1Loss(nn.Module):
-    def __init__(self):
-        super(L1Loss, self).__init__()
-
-    def forward(self, input, target):
-        # Calcula a diferença absoluta entre o input e o target
-        abs_diff = torch.abs(input - target)
-        # Calcula a média da diferença absoluta
-        loss = torch.mean(abs_diff)
-        return loss
-
-#adcicionar algumas VGG 16(Ja adicionada ao trabalho) 11 19
-class VGG16(nn.Module):
-    def __init__(self):
-        super(L1Loss, self).__init__()
-
-    def forward(self, input, target):
-        # Calcula a diferença absoluta entre o input e o target
-        abs_diff = torch.abs(input - target)
-        # Calcula a média da diferença absoluta
-        loss = torch.mean(abs_diff)
-        return loss
     
 # LPIPS(net='vgg')#VGG16
 # #adicionar alexnet(Adicionada)

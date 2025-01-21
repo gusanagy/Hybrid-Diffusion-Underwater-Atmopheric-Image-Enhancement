@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 import sys
 import os
+from Loss.loss import *
 
 # Adiciona o diretório pai ao sys.path
 from Loss.loss import *
@@ -28,7 +29,7 @@ def extract(v, t, x_shape):
 
 
 class GaussianDiffusionTrainer(nn.Module):
-    def __init__(self, model, beta_1, beta_T, T, Pre_train=None, perceptual='vgg'):
+    def __init__(self, model, beta_1, beta_T, T, Pre_train=None, perceptual='DINO'):
         super().__init__()
 
         self.model = model
@@ -53,12 +54,13 @@ class GaussianDiffusionTrainer(nn.Module):
         elif perceptual == 'alex':
             self.loss_perceptual = lpips.LPIPS(net='alex')
         elif self.loss_perceptual == 'DINO':
-            self.loss_perceptual = lpips.LPIPS(net='dino')#adicionar dino aq
+            self.loss_perceptual = PerceptualLoss_dino(model="dinov2_vits14")
 
-        self.light_loss = light_loss()
         self.color_loss = color_loss()
         self.L_color = L_color()
-
+        # Oforward pass precisa de um parametro dinamico que retorne as funcoes de perda 
+        # para realce e para a geracao dependendo desta flag, 
+        # no segundo caso sao adicionadas as funcoes de realce relacionadas
     def forward(self, gt_images, lowlight_image, epoch):
         """
         Algorithm 1.
@@ -71,8 +73,10 @@ class GaussianDiffusionTrainer(nn.Module):
 
         input = torch.cat([lowlight_image, y_t], dim=1).float()
 
-        noise_pred = self.model(input, t)
-
+        if torch.rand(1) < 0.02:
+            noise_pred = self.model(input, t,context_zero=True)
+        else:
+            noise_pred = self.model(input, t)
         #########################
         ### LOSS ###Ehancement###
         #########################

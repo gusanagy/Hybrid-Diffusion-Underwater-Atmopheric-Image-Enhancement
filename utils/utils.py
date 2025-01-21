@@ -389,7 +389,7 @@ class Underwater_Dataset(data.Dataset):
             else:
                 img_path_a = self.val_img_a[idx]
                 img= self.transform(image=load_image(img_path_a)) 
-            return img["image"]
+            return img["image"], img["image"]
     
 
 def plot_images_from_dataloader(dataloader, num_images=8):

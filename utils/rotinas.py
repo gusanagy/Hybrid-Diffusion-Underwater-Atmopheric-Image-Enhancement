@@ -15,7 +15,7 @@ from torchvision.utils import save_image
 from albumentations.pytorch import ToTensorV2
 import albumentations as A
 from diffusion import GaussianDiffusionSampler, GaussianDiffusionTrainer
-from diffusion.Model import UNet
+from diffusion.Model import DynamicUNet
 from .Scheduler import GradualWarmupScheduler
 from tensorboardX import SummaryWriter #provavelmente irei retirar o suporte a tensorboard
 from skimage.metrics import peak_signal_noise_ratio as PSNR
@@ -36,6 +36,7 @@ from tqdm import tqdm
 import wandb
 import random
 import matplotlib.pyplot as plt
+from utils.utils import *
 
 
 def train(config: Dict):
@@ -47,19 +48,21 @@ def train(config: Dict):
         device = torch.device("cuda", local_rank)
     
     ###load the data
-    datapath_train = load_image_paths(config.dataset_path,config.dataset)
-    dataload_train=load_data(datapath_train, datapath_train)
+    underwater_data, atmospheric_data = Underwater_Dataset(underwater_dataset_name=config.underwater_data_name), Atmospheric_Dataset(atmospheric_dataset_name=config.atmospheric_data_name)
 
-    ###Modificar aqui a forma como sao carregados os parametros
     if config.DDP == True:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(dataload_train)
-        dataloader= DataLoader(dataload_train, batch_size=config.batch_size,sampler=train_sampler)
+        train_sampler_u = torch.utils.data.distributed.DistributedSampler(underwater_data)
+        train_sampler_a = torch.utils.data.distributed.DistributedSampler(atmospheric_data)
+        dataloader_u= DataLoader(underwater_data, batch_size=config.batch_size,sampler=train_sampler_u,num_workers=4,drop_last=True, pin_memory=True)
+        dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size,sampler=train_sampler_a,num_workers=4,drop_last=True, pin_memory=True)
     else:
-        dataloader = DataLoader(dataload_train, batch_size=config.batch_size, shuffle=True, num_workers=4,
-                                drop_last=True, pin_memory=True)
+        dataloader_u= DataLoader(underwater_data, batch_size=config.batch_size,num_workers=4,drop_last=True, pin_memory=True)
+        dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size,num_workers=4,drop_last=True, pin_memory=True)
+
     ###carrega o modelo com as configuracoes indicadas 
-    net_model = UNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult, attn=config.attn,
-                     num_res_blocks=config.num_res_blocks, dropout=config.dropout)
+
+    net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult, attn=config.attn,
+                     num_res_blocks=config.num_res_blocks, dropout=config.dropout,)
 
     if config.pretrained_path is not None:
         ckpt = torch.load(os.path.join(
@@ -82,7 +85,7 @@ def train(config: Dict):
     warmUpScheduler = GradualWarmupScheduler(
         optimizer=optimizer, multiplier=config.multiplier, warm_epoch=config.epoch // 10, after_scheduler=cosineScheduler)
     trainer = GaussianDiffusionTrainer(
-        net_model, config.beta_1, config.beta_T, config.T,perceptual='alex',).to(device)
+        net_model, config.beta_1, config.beta_T, config.T,perceptual='DINO').to(device)
 
 
     log_savedir=config.output_path+'/logs/'
@@ -100,19 +103,17 @@ def train(config: Dict):
     num=0
     for e in range(config.epoch):
         if config.DDP == True:
-           dataloader.sampler.set_epoch(e)
+           dataloader_u.sampler.set_epoch(e)
 
-        with tqdm(dataloader, dynamic_ncols=True) as tqdmDataLoader:##nao ajustar loacal do tqdm para cima//usa a estrtura do posfix
-            for data_low, data_high, data_color, data_blur in tqdmDataLoader:
-                data_high = data_high.to(device)
-                data_low = data_low.to(device)
-                data_color=data_color.to(device)
-                data_blur=data_blur.to(device)#printar processamento psnr e concatenacoes
-                snr_map = getSnrMap(data_low, data_blur)
-                data_concate=torch.cat([data_color, snr_map], dim=1)
+        with tqdm(dataloader_u, dynamic_ncols=True) as tqdmDataLoader:##nao ajustar loacal do tqdm para cima//usa a estrtura do posfix
+            for input, label in tqdmDataLoader:
+                input, label = input.to(device), label.to(device)
+
                 optimizer.zero_grad()
-
-                [loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss] = trainer(data_high, data_low,data_concate,e)
+                if config.supervised==True:
+                    [loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss] = trainer(input, label,e)
+                else:
+                    [loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss] = trainer(input, label,e)
                 #[loss, mse_loss, col_loss,exp_loss,ssim_loss,vgg_loss] = trainer(data_high, data_low,data_concate,e)
                 ###calcula a media das funcoes de perda apos os passos do sampler
                 loss = loss.mean()
@@ -120,7 +121,71 @@ def train(config: Dict):
                 ssim_loss= ssim_loss.mean()
                 perceptual_loss = perceptual_loss.mean()
                 
+                loss.backward()
 
+                torch.nn.utils.clip_grad_norm_(
+                    net_model.parameters(), config.grad_clip)
+                optimizer.step()
+
+                loss_num=loss.item()
+                mse_num=mse_loss.item()
+                exp_num=exp_loss.item()
+                col_num=col_loss.item()
+                ssim_num = ssim_loss.item()
+                perceptual_num=perceptual_loss.item()
+                #L1_num = L1loss.item()
+                # writer.add_scalars('loss', {"loss_total":loss_num,
+                #                              "mse_loss":mse_num,
+                #                              "exp_loss":exp_num,
+                #                             'ssim_loss':ssim_num,
+                #                              "col_loss":col_num,
+                #                             "vgg_loss":vgg_num,
+                #                               }, num)
+                #Wandb Logs 
+                wandb.log({"Train":{
+                    "epoch underwater": e,
+                    "Loss: ": loss_num,
+                    "MSE Loss":mse_num,
+                    "Brithness_loss":exp_num,
+                    "COL Loss":col_num,
+                    'SSIM Loss':ssim_num,
+                    'perceptual Loss':perceptual_num,
+                    }})
+                num+=1
+                #Adicionar uma flag do wandb para acompanhar a loss// adaptar o summary writer do tensor board
+
+        warmUpScheduler.step()
+      
+        if e % 200 == 0:
+            if config.DDP == True:
+                if dist.get_rank() == 0:
+                    torch.save(net_model.state_dict(), os.path.join(
+                        ckpt_savedir, 'ckpt_' + str(e) + "_.pt"))
+            elif config.DDP == False:
+                torch.save(net_model.state_dict(), os.path.join(
+                    ckpt_savedir, 'ckpt_' + str(e) + "_.pt"))
+            ##TEST FUNCTION
+
+        num=0
+    for e in range(config.epoch):
+        if config.DDP == True:
+           dataloader_a.sampler.set_epoch(e)
+
+        with tqdm(dataloader_a, dynamic_ncols=True) as tqdmDataLoader:##nao ajustar loacal do tqdm para cima//usa a estrtura do posfix
+            for input, label in tqdmDataLoader:
+                input, label = input.to(device), label.to(device)
+
+                optimizer.zero_grad()
+
+                #Ajustar as saidas das funcoes de perda que serao usadas e quais serao usadas
+                [loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss] = trainer(input, label,e)
+                #[loss, mse_loss, col_loss,exp_loss,ssim_loss,vgg_loss] = trainer(data_high, data_low,data_concate,e)
+                ###calcula a media das funcoes de perda apos os passos do sampler
+                loss = loss.mean()
+                mse_loss = mse_loss.mean()
+                ssim_loss= ssim_loss.mean()
+                perceptual_loss = perceptual_loss.mean()
+                
                 loss.backward()
 
                 torch.nn.utils.clip_grad_norm_(
@@ -128,7 +193,7 @@ def train(config: Dict):
                 optimizer.step()
                 ###Entender esta linha
                 tqdmDataLoader.set_postfix(ordered_dict={
-                    "epoch": e,
+                    "epoch atmospheric": e,
                     "loss: ": loss.item(),
                     "mse_loss":mse_loss.item(),
                     "Brithness_loss":exp_loss.item(),
@@ -154,7 +219,7 @@ def train(config: Dict):
                 #                               }, num)
                 #Wandb Logs 
                 wandb.log({"Train":{
-                    "epoch": e,
+                    "epoch atmospheric": e,
                     "Loss: ": loss_num,
                     "MSE Loss":mse_num,
                     "Brithness_loss":exp_num,
@@ -184,7 +249,16 @@ def train(config: Dict):
             #write_data = 'epoch: {}  psnr: {:.4f} ssim: {:.4f}\n'.format(e, avg_psnr,avg_ssim)
             #f = open(save_txt, 'a+')
             #f.write(write_data)
+            #f.close()   
+
+        # if e % 200==0 and  e > 10:
+        #     Test(config,e)
+            #avg_psnr,avg_ssim=Test(config,e)
+            #write_data = 'epoch: {}  psnr: {:.4f} ssim: {:.4f}\n'.format(e, avg_psnr,avg_ssim)
+            #f = open(save_txt, 'a+')
+            #f.write(write_data)
             #f.close()
+        
 
 def Test(config: Dict,epoch):
 
