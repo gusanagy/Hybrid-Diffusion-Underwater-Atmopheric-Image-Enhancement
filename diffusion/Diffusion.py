@@ -8,13 +8,8 @@ import sys
 import os
 from Loss.loss import *
 
-# Adiciona o diretório pai ao sys.path
-from Loss.loss import *
 from typing import Dict
-from tensorboardX import SummaryWriter
 import cv2
-
-from kornia.losses import ssim_loss
 import numpy as np
 import lpips
 
@@ -29,7 +24,7 @@ def extract(v, t, x_shape):
 
 
 class GaussianDiffusionTrainer(nn.Module):
-    def __init__(self, model, beta_1, beta_T, T, Pre_train=None, perceptual='DINO'):
+    def __init__(self, model, beta_1, beta_T, T, perceptual_vgg:str="vgg", perceptual_dino:str="dinov2_vits14"):
         super().__init__()
 
         self.model = model
@@ -46,22 +41,29 @@ class GaussianDiffusionTrainer(nn.Module):
         ### Losses
         self.L_color = None
         self.num = 0
-        ### Necessita de avaliacao perceptual
-        if perceptual == 'vgg':
-            self.loss_perceptual = lpips.LPIPS(net='vgg')
-        elif perceptual == 'squeeze':
-            self.loss_perceptual = lpips.LPIPS(net='squeeze')
-        elif perceptual == 'alex':
-            self.loss_perceptual = lpips.LPIPS(net='alex')
-        elif self.loss_perceptual == 'DINO':
-            self.loss_perceptual = PerceptualLoss_dino(model="dinov2_vits14")
 
-        self.color_loss = color_loss()
-        self.L_color = L_color()
+
+        ### Funções de perda para O aprendizado das caracteristicas da imagem
+        self.loss_perceptual_vgg = lpips.LPIPS(net=perceptual_vgg)
+        self.loss_perceptual_dino = PerceptualLoss_dino(model=perceptual_dino)
+
+        ### Funções para o Realce de imagens 
+
         # Oforward pass precisa de um parametro dinamico que retorne as funcoes de perda 
         # para realce e para a geracao dependendo desta flag, 
         # no segundo caso sao adicionadas as funcoes de realce relacionadas
-    def forward(self, gt_images, lowlight_image, epoch):
+    def output_loss(self, input, gt, loss_type, loss_weight=1):
+        if loss_type == "color":
+            return self.color_loss(input, gt)
+        elif loss_type == "perceptual":
+            return self.loss_perceptual(input, gt)
+        elif loss_type == "ssim":
+            return ssim_loss(input, gt, window_size=11)
+        elif loss_type == "L_color":
+            return self.L_color(input)
+        else:
+            return 0
+    def forward(self, gt_images, input_image, epoch, enhancement: bool = False):
         """
         Algorithm 1.
         """
@@ -71,17 +73,38 @@ class GaussianDiffusionTrainer(nn.Module):
                 extract(self.sqrt_alphas_bar, t, gt_images.shape) * gt_images +
                 extract(self.sqrt_one_minus_alphas_bar, t, gt_images.shape) * noise)
 
-        input = torch.cat([lowlight_image, y_t], dim=1).float()
+        input = torch.cat([input_image, y_t], dim=1).float()
 
+
+        ##No Classifier Guidance - Use Labels as embbed features sometimes
         if torch.rand(1) < 0.02:
-            noise_pred = self.model(input, t,context_zero=True)
+            noise_pred = self.model(input, t, context_zero=True)
         else:
             noise_pred = self.model(input, t)
-        #########################
-        ### LOSS ###Ehancement###
-        #########################
 
-        loss = 0
+        ##########################################
+        ### LOSS ### Ehancement ### Generative ###
+        ##########################################
+        
+        #loss initializer
+        loss  = 0
+        losses = []
+        #Loss weights
+
+        if enhancement:
+            dino_weight, vgg_weight, msssim_weight, charbonnier_weight = 0.5, 0.5, 0.5, 0.5
+        else: 
+            dino_weight, vgg_weight, msssim_weight, charbonnier_weight = 0.5, 0.5, 0.5, 0.5
+
+
+            #Color Loss
+            col_loss = 0
+            col_loss_weight = 100
+            col_loss = self.color_loss(noise_pred, gt_images) * col_loss_weight
+            loss = col_loss
+        
+
+        ####Diffusion Loss and Prediction####
         mse_loss = F.mse_loss(noise_pred, noise, reduction='none')
         loss += mse_loss
 

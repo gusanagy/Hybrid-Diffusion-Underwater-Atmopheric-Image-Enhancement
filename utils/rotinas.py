@@ -17,15 +17,13 @@ import albumentations as A
 from diffusion import GaussianDiffusionSampler, GaussianDiffusionTrainer
 from diffusion.Model import DynamicUNet
 from .Scheduler import GradualWarmupScheduler
-from tensorboardX import SummaryWriter #provavelmente irei retirar o suporte a tensorboard
+#from tensorboardX import SummaryWriter #provavelmente irei retirar o suporte a tensorboard
 from skimage.metrics import peak_signal_noise_ratio as PSNR
 from skimage.metrics import structural_similarity as SSIM 
 from metrics.metrics import *
 import numpy as np
-import random
 import cv2
 import colorsys
-import os
 from typing import Dict, List
 import PIL
 from PIL import Image
@@ -37,6 +35,7 @@ import wandb
 import random
 import matplotlib.pyplot as plt
 from utils.utils import *
+#from itertools import cycle
 
 
 def train(config: Dict):
@@ -46,10 +45,13 @@ def train(config: Dict):
         torch.cuda.set_device(local_rank)
         dist.init_process_group(backend='nccl')
         device = torch.device("cuda", local_rank)
-    
+    #######################################################
+    #### Inicalização dos dados para a rotina de treino ###
+    #######################################################
     ###load the data
     underwater_data, atmospheric_data = Underwater_Dataset(underwater_dataset_name=config.underwater_data_name), Atmospheric_Dataset(atmospheric_dataset_name=config.atmospheric_data_name)
 
+    ### Select DDP or not and set the dataloader
     if config.DDP == True:
         train_sampler_u = torch.utils.data.distributed.DistributedSampler(underwater_data)
         train_sampler_a = torch.utils.data.distributed.DistributedSampler(atmospheric_data)
@@ -59,7 +61,7 @@ def train(config: Dict):
         dataloader_u= DataLoader(underwater_data, batch_size=config.batch_size,num_workers=4,drop_last=True, pin_memory=True)
         dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size,num_workers=4,drop_last=True, pin_memory=True)
 
-    ###carrega o modelo com as configuracoes indicadas 
+    ###Load The model, the weights if exist 
 
     net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult, attn=config.attn,
                      num_res_blocks=config.num_res_blocks, dropout=config.dropout,)
@@ -69,7 +71,7 @@ def train(config: Dict):
                 config.pretrained_path), map_location='cpu')
         net_model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
 
-
+    ### Set the model to DDP or DataParallel
     if config.DDP == True:
         net_model = DDP(net_model.cuda(), device_ids=[local_rank], output_device=local_rank,)
     else:
@@ -77,7 +79,8 @@ def train(config: Dict):
         device=config.device_list[0]
         net_model.to(device)
 
-    ##Set modeltools
+    ### Set the optimizer and the scheduler
+    # U can change the Learning Rate in the optmizer. This is importante in the second task for the fine tunning
     optimizer = torch.optim.AdamW(
         net_model.parameters(), lr=config.lr, weight_decay=1e-4)
     cosineScheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -87,11 +90,10 @@ def train(config: Dict):
     trainer = GaussianDiffusionTrainer(
         net_model, config.beta_1, config.beta_T, config.T,perceptual='DINO').to(device)
 
-
+    ### Set the log and the checkpoint save dir
     log_savedir=config.output_path+'/logs/'
     if not os.path.exists(log_savedir):
         os.makedirs(log_savedir)
-    #writer = SummaryWriter(log_dir=log_savedir)#sumario de escrita 
 
     ckpt_savedir=config.output_path+'/ckpt/'
     if not os.path.exists(ckpt_savedir):
@@ -99,7 +101,7 @@ def train(config: Dict):
     #save_txt= config.output_path + 'res.txt'
 
     #### Start training routine
-    ###Modificar rotina de treino e forma como tqdm funciona // Inserir teste das novas metricas no treinamento
+    ### Modificar rotina de treino e forma como tqdm funciona // Inserir teste das novas metricas no treinamento
     num=0
     for e in range(config.epoch):
         if config.DDP == True:
@@ -126,71 +128,6 @@ def train(config: Dict):
                 torch.nn.utils.clip_grad_norm_(
                     net_model.parameters(), config.grad_clip)
                 optimizer.step()
-
-                loss_num=loss.item()
-                mse_num=mse_loss.item()
-                exp_num=exp_loss.item()
-                col_num=col_loss.item()
-                ssim_num = ssim_loss.item()
-                perceptual_num=perceptual_loss.item()
-                #L1_num = L1loss.item()
-                # writer.add_scalars('loss', {"loss_total":loss_num,
-                #                              "mse_loss":mse_num,
-                #                              "exp_loss":exp_num,
-                #                             'ssim_loss':ssim_num,
-                #                              "col_loss":col_num,
-                #                             "vgg_loss":vgg_num,
-                #                               }, num)
-                #Wandb Logs 
-                wandb.log({"Train":{
-                    "epoch underwater": e,
-                    "Loss: ": loss_num,
-                    "MSE Loss":mse_num,
-                    "Brithness_loss":exp_num,
-                    "COL Loss":col_num,
-                    'SSIM Loss':ssim_num,
-                    'perceptual Loss':perceptual_num,
-                    }})
-                num+=1
-                #Adicionar uma flag do wandb para acompanhar a loss// adaptar o summary writer do tensor board
-
-        warmUpScheduler.step()
-      
-        if e % 200 == 0:
-            if config.DDP == True:
-                if dist.get_rank() == 0:
-                    torch.save(net_model.state_dict(), os.path.join(
-                        ckpt_savedir, 'ckpt_' + str(e) + "_.pt"))
-            elif config.DDP == False:
-                torch.save(net_model.state_dict(), os.path.join(
-                    ckpt_savedir, 'ckpt_' + str(e) + "_.pt"))
-            ##TEST FUNCTION
-
-        num=0
-    for e in range(config.epoch):
-        if config.DDP == True:
-           dataloader_a.sampler.set_epoch(e)
-
-        with tqdm(dataloader_a, dynamic_ncols=True) as tqdmDataLoader:##nao ajustar loacal do tqdm para cima//usa a estrtura do posfix
-            for input, label in tqdmDataLoader:
-                input, label = input.to(device), label.to(device)
-
-                optimizer.zero_grad()
-
-                #Ajustar as saidas das funcoes de perda que serao usadas e quais serao usadas
-                [loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss] = trainer(input, label,e)
-                #[loss, mse_loss, col_loss,exp_loss,ssim_loss,vgg_loss] = trainer(data_high, data_low,data_concate,e)
-                ###calcula a media das funcoes de perda apos os passos do sampler
-                loss = loss.mean()
-                mse_loss = mse_loss.mean()
-                ssim_loss= ssim_loss.mean()
-                perceptual_loss = perceptual_loss.mean()
-                
-                loss.backward()
-
-                torch.nn.utils.clip_grad_norm_(
-                    net_model.parameters(), config.grad_clip)
-                optimizer.step()
                 ###Entender esta linha
                 tqdmDataLoader.set_postfix(ordered_dict={
                     "epoch atmospheric": e,
@@ -203,23 +140,17 @@ def train(config: Dict):
                     "LR": optimizer.state_dict()['param_groups'][0]["lr"],
                     "num":num+1
                 })
+
                 loss_num=loss.item()
                 mse_num=mse_loss.item()
                 exp_num=exp_loss.item()
                 col_num=col_loss.item()
                 ssim_num = ssim_loss.item()
                 perceptual_num=perceptual_loss.item()
-                #L1_num = L1loss.item()
-                # writer.add_scalars('loss', {"loss_total":loss_num,
-                #                              "mse_loss":mse_num,
-                #                              "exp_loss":exp_num,
-                #                             'ssim_loss':ssim_num,
-                #                              "col_loss":col_num,
-                #                             "vgg_loss":vgg_num,
-                #                               }, num)
+                
                 #Wandb Logs 
                 wandb.log({"Train":{
-                    "epoch atmospheric": e,
+                    "epoch underwater": e,
                     "Loss: ": loss_num,
                     "MSE Loss":mse_num,
                     "Brithness_loss":exp_num,
@@ -228,6 +159,7 @@ def train(config: Dict):
                     'perceptual Loss':perceptual_num,
                     }})
                 num+=1
+
                 #Adicionar uma flag do wandb para acompanhar a loss// adaptar o summary writer do tensor board
 
         warmUpScheduler.step()
@@ -241,15 +173,7 @@ def train(config: Dict):
                 torch.save(net_model.state_dict(), os.path.join(
                     ckpt_savedir, 'ckpt_' + str(e) + "_.pt"))
             ##TEST FUNCTION
-            
 
-        # if e % 200==0 and  e > 10:
-        #     Test(config,e)
-            #avg_psnr,avg_ssim=Test(config,e)
-            #write_data = 'epoch: {}  psnr: {:.4f} ssim: {:.4f}\n'.format(e, avg_psnr,avg_ssim)
-            #f = open(save_txt, 'a+')
-            #f.write(write_data)
-            #f.close()   
 
         # if e % 200==0 and  e > 10:
         #     Test(config,e)
@@ -315,36 +239,29 @@ def Test(config: Dict,epoch):
     with torch.no_grad():
         with tqdm( dataloader, dynamic_ncols=True) as tqdmDataLoader:
                 image_num = 0
-                for data_low, data_high, data_color,data_blur,filename in tqdmDataLoader:
+                for input_image, gt_image, filename in tqdmDataLoader:
                     name=filename[0].split('/')[-1]
                     print('Image:',name)
-                    gt_image = data_high.to(device)
-                    lowlight_image = data_low.to(device)
-                    data_color = data_color.to(device)
-                    data_blur=data_blur.to(device)
-                    snr_map = getSnrMap(lowlight_image, data_blur)
-                    data_concate=torch.cat([data_color, snr_map], dim=1)
+                    gt_image = gt_image.to(device)
+                    input_image = input_image.to(device)
 
-                    #for i in range(-10, 10,1): 
-                        # light_high = torch.ones([1]) * i*0.1
-                        # light_high = light_high.to(device)
                         
-                    brightness_level=gt_image.mean([1, 2, 3]) # b*1
                     time_start = time.time()
-                    sampledImgs = sampler(lowlight_image, data_concate,brightness_level,ddim=True,
+                    sampledImgs = sampler(input_image,ddim=True,
                                           unconditional_guidance_scale=1,ddim_step=config.ddim_step)
                     time_end=time.time()
                     print('time cost:', time_end - time_start)
 
                     sampledImgs=(sampledImgs+1)/2
                     gt_image=(gt_image+1)/2
-                    lowlight_image=(lowlight_image+1)/2
+                    input_image=(input_image+1)/2
                     res_Imgs=np.clip(sampledImgs.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1] 
                     gt_img=np.clip(gt_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
-                    low_img=np.clip(lowlight_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
+                    input_image=np.clip(input_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
                     
                     
                     # Compute METRICS
+
                     ## compute psnr
                     psnr = PSNR(res_Imgs, gt_img)
                     #ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255)
@@ -356,16 +273,9 @@ def Test(config: Dict,epoch):
                     psnr_list.append(psnr)
                     ssim_list.append(ssim_score)
                     
-                    
-                    #send wandb
-                    output = np.concatenate([low_img, gt_img, res_Imgs], axis=1)*255
-                    image = wandb.Image(output, caption="Low image, High Image, Enhanced Image")
-                    #wout.append(image)
-                    if len(wout) <= 5:
-                        wout.append(image)
 
                     # show result
-                    # output = np.concatenate([low_img, gt_img, res_Imgs, res_trick], axis=1) / 255
+                    output = np.concatenate([input_image, gt_img, res_Imgs], axis=1) / 255
                     # plt.axis('off')
                     # plt.imshow(output)
                     # plt.show()
@@ -431,6 +341,8 @@ def Test(config: Dict,epoch):
 
 def Inference(config: Dict,epoch):
 
+    #PRECISA DE MUITAS MODIFICACEOS E N E PRIORIDADE NO MOMENTO
+
     ###load the data
     #datapath_test = load_image_paths(dataset_path=config.dataset_path,dataset=config.dataset,split=False,task="val")[:1]
     #print(datapath_test)
@@ -468,42 +380,21 @@ def Inference(config: Dict,epoch):
     with torch.no_grad():
         with tqdm(dataloader, dynamic_ncols=True) as tqdmDataLoader:
                 image_num = 0
-                for data_low, data_high, data_color,data_blur,filename in tqdmDataLoader:
+                for input_image, gt_image, filename in tqdmDataLoader:
                     name=filename[0].split('/')[-1]
                     print('Image:',name)
-                    gt_image = data_high.to(device)
-                    lowlight_image = data_low.to(device)
-                    data_color = data_color.to(device)
-                    data_blur=data_blur.to(device)
-                    snr_map = getSnrMap(lowlight_image, data_blur)
-                    data_concate=torch.cat([data_color, snr_map], dim=1)
-
-                    #for i in range(-10, 10,1): 
-                        # light_high = torch.ones([1]) * i*0.1
-                        # light_high = light_high.to(device)
+                    gt_image = gt_image.to(device)
+                    input_image = input_image.to(device)
                         
-                    brightness_level=gt_image.mean([1, 2, 3]) # b*1
                     #time_start = time.time()
-                    sampledImgs = sampler(lowlight_image, data_concate,brightness_level,ddim=True,
+                    sampledImgs = sampler(input_image, gt_image,ddim=True,
                                           unconditional_guidance_scale=1,ddim_step=config.ddim_step)
                     #time_end=time.time()
                     #print('time cost:', time_end - time_start)
 
-                    
-                    
-                    # for i in range(-3, 3): 
-                    #     brightness_level = torch.ones([1]) * i
-                    #     brightness_level = brightness_level.to(device)
-                        
-                    #     #time_start = time.time()
-                    #     sampledImgs = sampler(lowlight_image, data_concate,brightness_level,ddim=True,
-                    #                         unconditional_guidance_scale=1,ddim_step=config.ddim_step)
-                    #     #time_end=time.time()
-                    #     #print('time cost:', time_end - time_start)
-
                     sampledImgs=(sampledImgs+1)/2
                     gt_image=(gt_image+1)/2
-                    lowlight_image=(lowlight_image+1)/2
+                    input_image=(input_image+1)/2
                     res_Imgs=np.clip(sampledImgs.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1] 
                     #gt_img=np.clip(gt_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
                     #low_img=np.clip(lowlight_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
@@ -524,7 +415,202 @@ def Inference(config: Dict,epoch):
                 #     }})
 
                 
+########################################
+### Novas funcoes para o treinamento ###
+########################################
 
+def process_batch(input, label, device, trainer, optimizer, net_model, config, e):
+    """
+    Processa um batch: move para o dispositivo, calcula perdas e realiza o backward pass.
+    """
+    input, label = input.to(device), label.to(device)
+    optimizer.zero_grad()
+
+    # Calcular perdas usando a função de treinamento
+    [loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss] = trainer(input, label, e)
+
+    # Calcular a média das perdas
+    loss = loss.mean()
+    mse_loss = mse_loss.mean()
+    ssim_loss = ssim_loss.mean()
+    perceptual_loss = perceptual_loss.mean()
+
+    # Backpropagation e atualização dos parâmetros
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(net_model.parameters(), config.grad_clip)
+    optimizer.step()
+
+    return loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss
+
+
+def log_metrics(e, loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss, optimizer, tqdmDataLoader, num):
+    """
+    Registra métricas no TQDM e no WandB.
+    """
+    tqdmDataLoader.set_postfix(ordered_dict={
+        "epoch": e,
+        "loss": loss.item(),
+        "mse_loss": mse_loss.item(),
+        "Brithness_loss": exp_loss.item(),
+        "col_loss": col_loss.item(),
+        "ssim_loss": ssim_loss.item(),
+        "perceptual_loss": perceptual_loss.item(),
+        "LR": optimizer.state_dict()['param_groups'][0]["lr"],
+        "num": num + 1
+    })
+
+    wandb.log({"Train": {
+        "epoch": e,
+        "Loss": loss.item(),
+        "MSE Loss": mse_loss.item(),
+        "Brithness_loss": exp_loss.item(),
+        "COL Loss": col_loss.item(),
+        "SSIM Loss": ssim_loss.item(),
+        "Perceptual Loss": perceptual_loss.item(),
+    }})
+
+
+def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, e, num):
+    """
+    Treina o modelo alternando entre DataLoaders até que ambos sejam completamente percorridos.
+    """
+    # Criar iteradores para os DataLoaders
+    iterators = [iter(dataloader) for dataloader in dataloaders]
+    active_loaders = [True] * len(dataloaders)  # Marca quais DataLoaders ainda têm batches
+
+    with tqdm(total=sum(len(dataloader) for dataloader in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
+        while any(active_loaders):  # Continua enquanto houver loaders ativos
+            for i, iterator in enumerate(iterators):
+                if not active_loaders[i]:
+                    continue  # Pule se o DataLoader já foi completamente percorrido
+
+                try:
+                    input, label = next(iterator)  # Obter o próximo batch
+                    # Processar batch #modificar as saidas para o novo modelo
+                    loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss = process_batch(
+                        input, label, device, trainer, optimizer, net_model, config, e
+                    )
+
+                    # Logar métricas
+                    log_metrics(e, loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss, optimizer, tqdmDataLoader, num)
+
+                    num += 1
+                    tqdmDataLoader.update(1)
+
+                except StopIteration:
+                    # Marcar o DataLoader como concluído
+                    active_loaders[i] = False
+
+    return num
+
+
+def save_checkpoint(net_model, ckpt_savedir, e, config):
+    """
+    Salva o estado do modelo em um checkpoint.
+    """
+    checkpoint_path = os.path.join(ckpt_savedir, f'ckpt_{e}_.pt')
+    if config.DDP:
+        if dist.get_rank() == 0:
+            torch.save(net_model.state_dict(), checkpoint_path)
+    else:
+        torch.save(net_model.state_dict(), checkpoint_path)
+
+def test_function():
+    pass
+# Treinamento principal
+def train(config: Dict):
+    if config.DDP==True:
+        local_rank = int(os.getenv('LOCAL_RANK', -1))
+        print('locak rank:',local_rank)
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend='nccl')
+        device = torch.device("cuda", local_rank)
+    
+    #######################################################
+    #### Inicalização dos dados para a rotina de treino ###
+    #######################################################
+    ###load the data
+    underwater_data, atmospheric_data = Underwater_Dataset(underwater_dataset_name=config.underwater_data_name), Atmospheric_Dataset(atmospheric_dataset_name=config.atmospheric_data_name)
+
+    ### Select DDP or not and set the dataloader
+    if config.DDP == True:
+        train_sampler_u = torch.utils.data.distributed.DistributedSampler(underwater_data)
+        train_sampler_a = torch.utils.data.distributed.DistributedSampler(atmospheric_data)
+        dataloader_u= DataLoader(underwater_data, batch_size=config.batch_size,sampler=train_sampler_u,num_workers=4,drop_last=True, pin_memory=True)
+        dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size,sampler=train_sampler_a,num_workers=4,drop_last=True, pin_memory=True)
+    else:
+        dataloader_u= DataLoader(underwater_data, batch_size=config.batch_size,num_workers=4,drop_last=True, pin_memory=True)
+        dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size,num_workers=4,drop_last=True, pin_memory=True)
+
+    ###Load The model, the weights if exist 
+
+    net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult, attn=config.attn,
+                     num_res_blocks=config.num_res_blocks, dropout=config.dropout,)
+
+    if config.pretrained_path is not None:
+        ckpt = torch.load(os.path.join(
+                config.pretrained_path), map_location='cpu')
+        net_model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
+
+    ### Set the model to DDP or DataParallel
+    if config.DDP == True:
+        net_model = DDP(net_model.cuda(), device_ids=[local_rank], output_device=local_rank,)
+    else:
+        net_model=torch.nn.DataParallel(net_model,device_ids=config.device_list)
+        device=config.device_list[0]
+        net_model.to(device)
+
+    ### Set the optimizer and the scheduler
+    # U can change the Learning Rate in the optmizer. This is importante in the second task for the fine tunning
+    optimizer = torch.optim.AdamW(
+        net_model.parameters(), lr=config.lr, weight_decay=1e-4)
+    cosineScheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer=optimizer, T_max=config.epoch, eta_min=0, last_epoch=-1)
+    warmUpScheduler = GradualWarmupScheduler(
+        optimizer=optimizer, multiplier=config.multiplier, warm_epoch=config.epoch // 10, after_scheduler=cosineScheduler)
+    trainer = GaussianDiffusionTrainer(
+        net_model, config.beta_1, config.beta_T, config.T,perceptual='DINO').to(device)
+
+    ### Set the log and the checkpoint save dir
+    log_savedir=config.output_path+'/logs/'
+    if not os.path.exists(log_savedir):
+        os.makedirs(log_savedir)
+
+    ckpt_savedir=config.output_path+'/ckpt/'
+    if not os.path.exists(ckpt_savedir):
+        os.makedirs(ckpt_savedir)
+    #save_txt= config.output_path + 'res.txt'
+
+
+    ################################
+    #### Start training routine ####
+    ################################
+
+
+    num = 0
+    dataloaders = [dataloader_u, dataloader_a]
+
+    for e in range(config.epoch):
+        if config.DDP:
+            for dataloader in dataloaders:
+                dataloader.sampler.set_epoch(e)
+
+        # Treinar alternando entre os dois DataLoaders
+        num = train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, e, num)
+
+        # Atualizar scheduler
+        warmUpScheduler.step()
+
+        # Salvar checkpoints a cada 200 épocas
+        if e % 200 == 0:
+            save_checkpoint(net_model, ckpt_savedir, e, config)
+            #test_function()
+        # Função de teste (se necessário)
+        # 
+
+
+
+########################################
                 
 
 

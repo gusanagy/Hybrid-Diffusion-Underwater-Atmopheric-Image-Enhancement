@@ -2,6 +2,14 @@ import torch
 import torch.nn as nn
 import torchvision
 import torch.nn.functional as F
+import torchvision.models as models
+from kornia.losses import ssim_loss as ssim, psnr_loss as psnr, MS_SSIMLoss as ms_ssim, charbonnier_loss as charbonnier
+
+
+#############################################################
+###Funcoes para aprenzado de caracteristicas dos datasets ###
+#############################################################
+
 
 ## DINO LOSS FUNCTIONS
 class PerceptualLoss_dino(nn.Module):
@@ -121,19 +129,113 @@ class PerceptualLoss_dino(nn.Module):
 
             loss += nn.functional.smooth_l1_loss(inp_feat, tgt_feat).to('cpu')
         return loss
+    
 
-###############################################
 
-class color_loss(nn.Module):
-    def __init__(self):
-        super(color_loss, self).__init__()
+# Definindo a PerceptualLoss
+class PerceptualLoss_vgg(nn.Module):
+    def __init__(self, id: int = None, model='vgg16', layer_indices=None):
+        super(PerceptualLoss_vgg, self).__init__()
+        # Load the model
+        self._id = id
+        if model == 'vgg11':
+            self.perceptual = models.vgg11(weights=models.VGG11_Weights.IMAGENET1K_V1).features
+        elif model == 'vgg11_bn':
+            self.perceptual = models.vgg11_bn(weights=models.VGG11_BN_Weights.IMAGENET1K_V1).features
+        elif model == 'vgg13':
+            self.perceptual = models.vgg13(weights=models.VGG13_Weights.IMAGENET1K_V1).features
+        elif model == 'vgg13_bn':
+            self.perceptual = models.vgg13_bn(weights=models.VGG13_BN_Weights.IMAGENET1K_V1).features
+        elif model == 'vgg16':
+            self.perceptual = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features
+        elif model == 'vgg16_bn':
+            self.perceptual = models.vgg16_bn(weights=models.VGG16_BN_Weights.IMAGENET1K_V1).features
+        elif model == 'vgg19':
+            self.perceptual = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1).features
+        elif model == 'vgg19_bn':
+            self.perceptual = models.vgg19_bn(weights=models.VGG19_BN_Weights.IMAGENET1K_V1).features
+        elif model == 'squeeze':
+            self.perceptual = models.squeezenet1_1(weights=models.SqueezeNet1_1_Weights.IMAGENET1K_V1).features
+        elif model == 'alex':
+            self.perceptual = models.alexnet(weights=models.AlexNet_Weights.IMAGENET1K_V1).features
+        else:
+            raise ValueError("Unsupported perceptual model type. Choose from ['vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn', 'vgg19', 'vgg19_bn', 'squeeze', 'alex']")
+        
+        self._model = model
+        
+        self.perceptual.eval()  # Set to evaluation mode
+        for param in self.perceptual.parameters():
+            param.requires_grad = False  # Freeze the parameters
+        
+        self.layer_indices = {
+            'squeeze':  [3, 7, 12],
+            'vgg11':    [3, 8, 15, 22],
+            'vgg11_bn': [3, 8, 15, 22],
+            'vgg13':    [3, 8, 15, 22],
+            'vgg13_bn': [3, 8, 15, 22],
+            'vgg16':    [3, 8, 15, 22],
+            'vgg16_bn': [3, 8, 15, 22],
+            'vgg19':    [3, 8, 17, 26, 35],
+            'vgg19_bn': [3, 8, 17, 26, 35],
+            'alex':     [3, 6, 8, 10, 12],
+        }
+
+        if layer_indices is not None:
+            self.layer_indices[model] = layer_indices
+    
+    @property
+    def name(self):
+        return self.__class__.__name__ + '_' + self._model
+
+    @property
+    def id(self):
+        return self._id
+    
+    def forward(self, x, y):
+        # Normalize the inputs
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(x.device)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(x.device)
+        x = (x - mean) / std
+        y = (y - mean) / std
+
+        # Extract features
+        x_features = self.extract_features(x)
+        y_features = self.extract_features(y)
+
+        # Calculate perceptual loss
+        loss = 0.0
+        for xf, yf in zip(x_features, y_features):
+            loss += nn.functional.l1_loss(xf, yf, reduction='mean')
+
+        return loss
+
+    def extract_features(self, x):
+        features = []
+        for i, layer in enumerate(self.perceptual):
+            x = layer(x)
+            if i in self.layer_indices[self._model]:
+                features.append(x)
+        return features
+
+###################################################
+###Funcoes para o aprendizdo de realce dos dados###
+###################################################
+
+"""Angular Color Loss function"""##mudar nome %
+class angular_color_loss(nn.Module):
+    def __init__(self,id:int = None):
+        super(angular_color_loss, self).__init__()
+        self._id = id
+    @property
+    def name(self):
+        return self.__class__.__name__
+    @property
+    def id(self):
+        return self._id
     
     def forward(self, output, gt,mask=None):
         img_ref = F.normalize(output, p = 2, dim = 1)
         ref_p = F.normalize(gt, p = 2, dim = 1)
-        if mask!=None:
-            img_ref=mask*img_ref
-            ref_p*=mask
         loss_cos = 1 - torch.mean(F.cosine_similarity(img_ref, ref_p, dim=1))
         # loss_cos = self.mse(img_ref, ref_p)
         return loss_cos
@@ -178,12 +280,36 @@ class L_exp(nn.Module):
         d = torch.mean(torch.pow(mean- torch.FloatTensor([self.mean_val] ).to(device),2))
         return d
  
+"""MS-SSIM Loss function"""
+class MSSSIMLoss(nn.Module):
+    def __init__(self, id: int = None):
+        super(MSSSIMLoss, self).__init__()
+        self._id = id
 
- ##adiionar novas funcoes de perda para o realce
+    @property
+    def name(self):
+        return self.__class__.__name__
 
+    @property
+    def id(self):
+        return self._id
+
+    def forward(self, input, target):
+        return  ms_ssim(input, target)
     
-# LPIPS(net='vgg')#VGG16
-# #adicionar alexnet(Adicionada)
-# LPIPS(net='alex')
-# #adicionar squeezenet(Adicionada)
-# LPIPS(net='squeeze')
+"""Charbonnier Loss function"""
+class CharbonnierLoss(nn.Module):
+    def __init__(self, id: int = None):
+        super(CharbonnierLoss, self).__init__()
+        self._id = id
+
+    @property
+    def name(self):
+        return self.__class__.__name__
+
+    @property
+    def id(self):
+        return self._id
+
+    def forward(self, input, target):
+        return charbonnier(input, target)
