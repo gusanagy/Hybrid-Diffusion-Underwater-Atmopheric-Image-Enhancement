@@ -427,7 +427,7 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     optimizer.zero_grad()
 
     # Calcular perdas usando a função de treinamento
-    [loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss] = trainer(input, label, e)
+    [loss, mse_loss, ang_color_loss ,ms_ssim_loss, charbonier_loss , perceptual_vgg_loss, perceptual_dino_loss] = trainer(input, label, e)
 
     # Calcular a média das perdas
     loss = loss.mean()
@@ -440,33 +440,38 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     torch.nn.utils.clip_grad_norm_(net_model.parameters(), config.grad_clip)
     optimizer.step()
 
-    return loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss
+    return loss, mse_loss, ang_color_loss ,ms_ssim_loss, charbonier_loss , perceptual_vgg_loss, perceptual_dino_loss
 
 
-def log_metrics(e, loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss, optimizer, tqdmDataLoader, num):
+def log_metrics(e, loss, mse_loss, ang_color_loss ,ms_ssim_loss, charbonier_loss , perceptual_vgg_loss, perceptual_dino_loss, optimizer, tqdmDataLoader, num):
     """
     Registra métricas no TQDM e no WandB.
     """
+    #falta editar o resto das funcoes de perda
     tqdmDataLoader.set_postfix(ordered_dict={
         "epoch": e,
         "loss": loss.item(),
         "mse_loss": mse_loss.item(),
-        "Brithness_loss": exp_loss.item(),
-        "col_loss": col_loss.item(),
-        "ssim_loss": ssim_loss.item(),
-        "perceptual_loss": perceptual_loss.item(),
+        "Perceptual_dino": perceptual_dino_loss.item(),
+        "Perceptual_vgg": perceptual_vgg_loss.item(),
+        "MS_SSIM": ms_ssim_loss.item(),
+        "Charbonnier ": charbonier_loss.item(),
+        "ang_color_loss ": ang_color_loss.item(),
         "LR": optimizer.state_dict()['param_groups'][0]["lr"],
         "num": num + 1
     })
 
     wandb.log({"Train": {
         "epoch": e,
-        "Loss": loss.item(),
-        "MSE Loss": mse_loss.item(),
-        "Brithness_loss": exp_loss.item(),
-        "COL Loss": col_loss.item(),
-        "SSIM Loss": ssim_loss.item(),
-        "Perceptual Loss": perceptual_loss.item(),
+        "loss": loss.item(),
+        "mse_loss": mse_loss.item(),
+        "Perceptual_dino": perceptual_dino_loss.item(),
+        "Perceptual_vgg": perceptual_vgg_loss.item(),
+        "MS_SSIM": ms_ssim_loss.item(),
+        "Charbonnier ": charbonier_loss.item(),
+        "ang_color_loss ": ang_color_loss.item(),
+        "LR": optimizer.state_dict()['param_groups'][0]["lr"],
+        "num": num + 1
     }})
 
 
@@ -487,12 +492,12 @@ def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, c
                 try:
                     input, label = next(iterator)  # Obter o próximo batch
                     # Processar batch #modificar as saidas para o novo modelo
-                    loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss = process_batch(
+                    loss, mse_loss, ang_color_loss ,ms_ssim_loss, charbonier_loss , perceptual_vgg_loss, perceptual_dino_loss = process_batch(
                         input, label, device, trainer, optimizer, net_model, config, e
                     )
 
                     # Logar métricas
-                    log_metrics(e, loss, mse_loss, col_loss, exp_loss, ssim_loss, perceptual_loss, optimizer, tqdmDataLoader, num)
+                    log_metrics(e, loss, mse_loss,ang_color_loss ,ms_ssim_loss, charbonier_loss , perceptual_vgg_loss, perceptual_dino_loss, optimizer, tqdmDataLoader, num)
 
                     num += 1
                     tqdmDataLoader.update(1)
@@ -559,7 +564,9 @@ def train(config: Dict):
         net_model=torch.nn.DataParallel(net_model,device_ids=config.device_list)
         device=config.device_list[0]
         net_model.to(device)
-
+    ### modificacoes no scheduler virao a seguir
+    #############
+    #############
     ### Set the optimizer and the scheduler
     # U can change the Learning Rate in the optmizer. This is importante in the second task for the fine tunning
     optimizer = torch.optim.AdamW(
@@ -595,7 +602,7 @@ def train(config: Dict):
             for dataloader in dataloaders:
                 dataloader.sampler.set_epoch(e)
 
-        # Treinar alternando entre os dois DataLoaders
+        # Treinar alternando entre os dois DataLoaders ## Falta colocar a etapa de forma cicular ate chegar ao trainer. Etapas
         num = train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, e, num)
 
         # Atualizar scheduler
