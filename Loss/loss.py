@@ -51,14 +51,35 @@ class PerceptualLoss_dino(nn.Module):
         dinov2_vitg14_reg = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitg14_reg')""")
         
 
-        self.model = model.eval()  # Set model to evaluation mode
+        self.model = self.model.eval()  # Set model to evaluation mode
         self.layers = layers
         self.normalize_inputs = normalize_inputs
 
         # Disable gradient computation for the model
         for param in self.model.parameters():
             param.requires_grad = False
+    def _crop_tensor(self, tensor):
+        """
+        Realiza um crop de um tensor de tamanho (1, 3, 256, 256) para (1, 3, 252, 252).
+        
+        Parâmetros:
+            tensor (torch.Tensor): Tensor no formato (1, 3, 256, 256).
+        
+        Retorna:
+            torch.Tensor: Tensor cropped no formato (1, 3, 252, 252).
+        """
+        # Calcula os índices para o corte
+        crop_size = 252
+        start = (256 - crop_size) // 2  # Começo do corte
+        end = start + crop_size         # Fim do corte
 
+        #tensor  = tensor.to("cuda")
+        
+        # Aplica o corte diretamente
+        cropped_tensor = F.pad(tensor, pad=(-start, -start, -start, -start))
+        #print(f"Input shape: {tensor.shape}, Output shape: {cropped_tensor.shape}")
+        
+        return cropped_tensor
     def _ensure_tensor(self, feat):
             if isinstance(feat, tuple):
                 feat = feat[0]
@@ -74,6 +95,7 @@ class PerceptualLoss_dino(nn.Module):
         Returns:
             list of torch.Tensor: Extracted features.
         """
+        #x = x.float() / 255.0
         features = []
         hooks = []
 
@@ -112,13 +134,14 @@ class PerceptualLoss_dino(nn.Module):
         Returns:
             torch.Tensor: Perceptual loss value.
         # """
+
         if self.normalize_inputs:
             input = (input - input.min()) / (input.max() - input.min())
             target = (target - target.min()) / (target.max() - target.min())
 
         # Extract features
-        input_features = self.extract_features(input)
-        target_features = self.extract_features(target)
+        input_features = self.extract_features(self._crop_tensor(input))
+        target_features = self.extract_features(self._crop_tensor(target))
 
         # Compute loss
         loss = 0
@@ -127,7 +150,7 @@ class PerceptualLoss_dino(nn.Module):
             inp_feat = self._ensure_tensor(inp_feat)
             tgt_feat = self._ensure_tensor(tgt_feat)
 
-            loss += nn.functional.smooth_l1_loss(inp_feat, tgt_feat).to('cpu')
+            loss += nn.functional.smooth_l1_loss(inp_feat, tgt_feat, reduction='mean')
         return loss
     
 
@@ -193,10 +216,10 @@ class PerceptualLoss_vgg(nn.Module):
     
     def forward(self, x, y):
         # Normalize the inputs
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(x.device)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(x.device)
-        x = (x - mean) / std
-        y = (y - mean) / std
+        # mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)#.to(x.device)
+        # std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)#.to(x.device)
+        # x = (x - mean) / std
+        # y = (y - mean) / std
 
         # Extract features
         x_features = self.extract_features(x)
@@ -205,7 +228,7 @@ class PerceptualLoss_vgg(nn.Module):
         # Calculate perceptual loss
         loss = 0.0
         for xf, yf in zip(x_features, y_features):
-            loss += nn.functional.l1_loss(xf, yf, reduction='mean')
+            loss += nn.functional.l1_loss(xf, yf, reduction='mean',)
 
         return loss
 
@@ -247,7 +270,7 @@ class MSSSIMLoss(nn.Module):
     def __init__(self, id: int = None):
         super(MSSSIMLoss, self).__init__()
         self._id = id
-
+        self.loss = ms_ssim()
     @property
     def name(self):
         return self.__class__.__name__
@@ -257,7 +280,7 @@ class MSSSIMLoss(nn.Module):
         return self._id
 
     def forward(self, input, target):
-        return  ms_ssim(input, target)
+        return  self.loss(input, target)
     
 """Charbonnier Loss function"""
 class CharbonnierLoss(nn.Module):

@@ -286,7 +286,7 @@ class DynamicUNet(nn.Module):
         self.cond_embedding = ConditionalEmbedding(num_labels, ch, tdim)
 
         ## Layers
-        self.head = nn.Conv2d(3, ch, kernel_size=3, stride=1, padding=1)
+        self.head = nn.Conv2d(3, ch, kernel_size=3, stride=1, pa                 dding=1)
         self.downblocks, self.chs, self.now_ch = self.create_downblocks(ch, ch_mult, num_res_blocks, tdim, dropout)
         self.middleblocks = self.create_middleblocks(self.now_ch, tdim, dropout)
         self.upblocks = self.create_upblocks(ch, ch_mult, num_res_blocks, tdim, dropout)

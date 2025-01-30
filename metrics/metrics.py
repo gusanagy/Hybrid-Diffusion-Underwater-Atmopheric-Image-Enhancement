@@ -468,6 +468,80 @@ def logamee(ch, blocksize=8):
     return plipmult(w, s)
 
 
+class FID:
+    def __init__(self, device="cpu"):
+        self.device = device
+        self.model = inception_v3(pretrained=True, transform_input=False).to(device)
+        self.model.fc = nn.Identity()  # Remove a última camada de classificação
+        self.model.eval()
+
+        self.transform = Compose([
+            Lambda(lambda x: x.permute(1, 2, 0).cpu().numpy()),  # Converte para formato HWC
+            Lambda(lambda x: np.clip((x * 255).astype(np.uint8), 0, 255)),  # Converte imagens HWC para x-RGB Uint FLAV
+            ToTensor()  # Converte de volta para torch.Tensor
+        ])
+    def _calculate_stats(self, features):
+        mean = np.mean(features, axis=0)
+        cov = np.cov(features, rowvar=False)
+        return mean, cov
+
+    # def _frechet_distance(self, mu1, sigma1, mu2, sigma2):
+    #     diff = mu1 - mu2
+    #     covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
+
+    #     # Caso de matriz não positiva definida
+    #     if not np.isfinite(covmean).all():
+    #         offset = np.eye(sigma1.shape[0]) * 1e-6
+    #         covmean = sqrtm((sigma1 + offset) @ (sigma2 + offset))
+
+    #     return np.sum(diff**2) + np.trace(sigma1 + sigma2 - 2 * covmean)
+    def _frechet_distance(self, mu1, sigma1, mu2, sigma2):
+        diff = mu1 - mu2
+        covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
+
+        # Caso de matriz não positiva definida
+        if not np.isfinite(covmean).all() or np.iscomplexobj(covmean):
+            offset = np.eye(sigma1.shape[0]) * 1e-6
+            covmean = sqrtm((sigma1 + offset) @ (sigma2 + offset))
+
+        # Certifique-se de que o resultado seja real
+        covmean = covmean.real
+
+        return np.sum(diff**2) + np.trace(sigma1 + sigma2 - 2 * covmean)
+
+
+    def extract_features(self, images):
+        with torch.no_grad():
+            features = self.model(images).cpu().numpy()
+        return features
+
+    def compute_fid(self, real_images, generated_images):
+        """
+        Calcula o FID entre as imagens reais e geradas.
+
+        Args:
+            real_images (torch.Tensor): Batch de imagens reais (N, C, H, W)
+            generated_images (torch.Tensor): Batch de imagens geradas (N, C, H, W)
+
+        Returns:
+            float: valor do FID
+        """
+        # Normalizar e redimensionar
+        real_images = torch.stack([self.transform(img) for img in real_images]).to(self.device)
+        generated_images = torch.stack([self.transform(img) for img in generated_images]).to(self.device)
+
+        # Extrair features
+        real_features = self.extract_features(real_images)
+        generated_features = self.extract_features(generated_images)
+
+        # Calcular estatísticas
+        mu1, sigma1 = self._calculate_stats(real_features)
+        mu2, sigma2 = self._calculate_stats(generated_features)
+
+        # Calcular FID
+        fid = self._frechet_distance(mu1, sigma1, mu2, sigma2)
+        return fid
+
 def main():
     #dataset val // dataset inferencia // dataset // author
     avaliacao = [ 

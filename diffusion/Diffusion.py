@@ -24,7 +24,7 @@ def extract(v, t, x_shape):
 
 
 class GaussianDiffusionTrainer(nn.Module):
-    def __init__(self, model, beta_1, beta_T, T, perceptual_vgg:str="vgg", perceptual_dino:str="dinov2_vits14"):
+    def __init__(self, model, beta_1, beta_T, T, perceptual_vgg:str="vgg16", perceptual_dino:str="dinov2_vits14"):
         super().__init__()
 
         self.model = model
@@ -38,120 +38,107 @@ class GaussianDiffusionTrainer(nn.Module):
             'sqrt_alphas_bar', torch.sqrt(alphas_bar))
         self.register_buffer(
             'sqrt_one_minus_alphas_bar', torch.sqrt(1. - alphas_bar))
-        ### Losses
-        self.L_color = None
+                
         self.num = 0
-
+        self.stage = 0
 
         ### Funções de perda para O aprendizado das caracteristicas da imagem
-        self.loss_perceptual_vgg = lpips.LPIPS(net=perceptual_vgg)
-        self.loss_perceptual_dino = PerceptualLoss_dino(model=perceptual_dino)
+        self.loss_perceptual_vgg = PerceptualLoss_vgg(model=perceptual_vgg)#Aprendizado em nivel de pixel
+        self.loss_perceptual_dino = PerceptualLoss_dino(model=perceptual_dino).to("cuda")#aprendizado global
 
         ### Funções para o Realce de imagens 
+        self.color_loss = angular_color_loss()#aprendizado de cor
+        self.charbonnier_loss = CharbonnierLoss()#aprendizado de estrutura 
+        self.ms_ssim_loss = MSSSIMLoss().to("cuda")#aprendizado de estrutura
 
-        # Oforward pass precisa de um parametro dinamico que retorne as funcoes de perda 
-        # para realce e para a geracao dependendo desta flag, 
-        # no segundo caso sao adicionadas as funcoes de realce relacionadas
-    def output_loss(self, input, gt, loss_type, loss_weight=1):
-        if loss_type == "color":
-            return self.color_loss(input, gt)
-        elif loss_type == "perceptual":
-            return self.loss_perceptual(input, gt)
-        elif loss_type == "ssim":
-            return ssim_loss(input, gt, window_size=11)
-        elif loss_type == "L_color":
-            return self.L_color(input)
-        else:
-            return 0
-    def forward(self, gt_images, input_image, epoch, enhancement: bool = False):
+    def forward(self, gt_images, input_image, stage):
+        self.stage = stage
+        input_image = input_image.float()/255.0
+        gt_images = (gt_images.float()/255.0)*2-1
         """
         Algorithm 1.
         """
         t = torch.randint(self.T, size=(gt_images.shape[0],), device=gt_images.device)
-        noise = torch.randn_like(gt_images)
+        noise = torch.randn_like(gt_images, dtype=torch.float32)
         y_t = (
                 extract(self.sqrt_alphas_bar, t, gt_images.shape) * gt_images +
                 extract(self.sqrt_one_minus_alphas_bar, t, gt_images.shape) * noise)
 
-        input = torch.cat([input_image, y_t], dim=1).float()
+        input = torch.cat([input_image, y_t], dim=1).float()### Erro nos canais de cor errado e aqui
 
-
+        #print("input shape: ",input.shape,"label shape: ",gt_images.shape, "input image", input_image.shape)
         ##No Classifier Guidance - Use Labels as embbed features sometimes
         if torch.rand(1) < 0.02:
-            noise_pred = self.model(input, t, context_zero=True)
+            noise_pred = self.model(input, t, gt_images, context_zero=True)
         else:
-            noise_pred = self.model(input, t)
+            noise_pred = self.model(input, t, gt_images)
+
 
         ##########################################
         ### LOSS ### Ehancement ### Generative ###
         ##########################################
+
+        # Existem seis funcoes de perda aqui contando com a MSE(Funcao de perda responsavel pela difusao)
+        #losses initializer
+        loss, mse_loss, perceptual_vgg, msssim, col_loss, charbonnier, perceptual_dino = 0 ,0 ,0 ,0 ,0 ,0 ,0
+        #initialize Weights
+        dino_weight, vgg_weight, msssim_weight, charbonnier_weight,col_loss_weight = 0.0, 0.0, 0.0, 0.0, 0.0
         
-        #loss initializer
-        loss  = 0
-        losses = []
-        #Loss weights
-
-        if enhancement:
-            dino_weight, vgg_weight, msssim_weight, charbonnier_weight = 0.5, 0.5, 0.5, 0.5
-        else: 
-            dino_weight, vgg_weight, msssim_weight, charbonnier_weight = 0.5, 0.5, 0.5, 0.5
-
-
-            #Color Loss
-            col_loss = 0
-            col_loss_weight = 100
-            col_loss = self.color_loss(noise_pred, gt_images) * col_loss_weight
-            loss = col_loss
-        
-
+        #####################################
         ####Diffusion Loss and Prediction####
+        #####################################
+        
         mse_loss = F.mse_loss(noise_pred, noise, reduction='none')
         loss += mse_loss
 
+        #reconstrucao da imagem a partir do ruido
         y_0_pred = 1 / extract(self.sqrt_alphas_bar, t, gt_images.shape) * (
-                    y_t - extract(self.sqrt_one_minus_alphas_bar, t, gt_images.shape) * noise_pred).float()
+                    y_t - extract(self.sqrt_one_minus_alphas_bar, t, gt_images.shape) * noise_pred).float() / 255.0
+        
+        # Etapas 0 e 1 Aprendizado de caracteristicas Etapa 2 Realce de Imagem
+        if self.stage == 0:
+            #MSE, Perceptual DINO, MS_SSIM 
+            dino_weight, msssim_weight = 1.0, 0.13 #definir pesos ao checar as escalar das funcoes de perda
 
-        second_start = 20
-        col_loss = 0
-        col_loss_weight = 100
-        if epoch < second_start:
-            col_loss_weight = 0
-        col_loss = self.color_loss(y_0_pred, gt_images) * col_loss_weight
-        loss += col_loss
+            perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
+            loss += perceptual_dino
 
-        exposure_loss = 0
-        exposure_loss_weight = 20
-        if epoch < second_start:
-            exposure_loss_weight = 0
-        exposure_loss = self.light_loss(y_0_pred, gt_images) * exposure_loss_weight
-        loss += exposure_loss
+            msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
+            loss += msssim
 
-        ssimLoss = 0
-        ssim_weight = 2.83
-        ssimLoss = ssim_loss(y_0_pred, gt_images, window_size=11) * ssim_weight
-        loss += ssimLoss
+        #    return loss, mse_loss, perceptual_dino, msssim
 
-        perceptual_loss = 0
-        perceptual_loss_weight = 30
-        perceptual_loss = self.loss_perceptual(gt_images, y_0_pred) * perceptual_loss_weight
-        loss += perceptual_loss
+        elif self.stage == 1:
+            #MSE, Perceptual  VGG, Charbonnier
+            vgg_weight, charbonnier_weight = 1.0, 1.0
 
-        #Perceptual Loss
+            perceptual_vgg = self.loss_perceptual_vgg(y_0_pred, gt_images) * vgg_weight
+            loss += perceptual_vgg
 
+            charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
+            loss += charbonnier
 
-        #Color Loss
+        #    return loss, mse_loss, perceptual_vgg, charbonnier
 
+        elif self.stage == 2:
+            #MSE, MS_SSIM, Charbonnier # Verdadeira etapa de realce
+            msssim_weight, charbonnier_weight,col_loss_weight = 1.0, 0.0028, 0.61
 
-        #Generative Loss
+            col_loss = self.color_loss(y_0_pred, gt_images) * col_loss_weight
+            loss += col_loss
 
+            charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
+            loss += charbonnier
 
-        #Exposure Loss
+            msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
+            loss += msssim
 
+        #    return loss, mse_loss, msssim, charbonnier, col_loss
 
-        return [loss, mse_loss, col_loss, exposure_loss, ssimLoss, perceptual_loss]
+        return [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss]
 
 
-class GaussianDiffusionSampler(nn.Module):
+class GaussianDiffusionSampler(nn.Module):##terei que ajustar o diffusion sampler
     def __init__(self, model, beta_1, beta_T, T):
         super().__init__()
 

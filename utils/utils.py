@@ -239,7 +239,7 @@ def load_image(image_path):
     
 #Adaptar datasets para carregar treino e teste imagens dependo do dataset escolhido
 class Atmospheric_Dataset(data.Dataset):
-    def __init__(self, atmospheric_dataset_name: str, batch_size:int = 8, transforms=None, task: str = "train", supervised: bool = False):
+    def __init__(self, atmospheric_dataset_name: str, batch_size:int = 8, transforms=None, task: str = "train", supervised: bool = True):
         self.dataset_name = atmospheric_dataset_name
         self.batch_size = batch_size
         self.task =task
@@ -303,15 +303,15 @@ class Atmospheric_Dataset(data.Dataset):
                 img= self.transform(image=load_image(img_path_a))  # Implement `load_image` to load an image from a file path
             elif self.task == "test":
                 img_path_a = self.test_img_a[idx]
-                img= self.transform(image=load_image(img_path_a)) 
+                img= self.transform(image=load_image(img_path_a))
             else:
                 img_path_a = self.val_img_a[idx]
-                img= self.transform(image=load_image(img_path_a)) 
+                img= self.transform(image=load_image(img_path_a))
             return img["image"]
 
 #modificar dataset para treino e tesete # impementar flag de suervisao para carregar os dados anotados
 class Underwater_Dataset(data.Dataset):
-    def __init__(self, underwater_dataset_name: str ,  transforms=None, task: str = "train", supervised: bool = False):
+    def __init__(self, underwater_dataset_name: str ,  transforms=None, task: str = "train", supervised: bool = True):
         self.underwater_dataset_name = underwater_dataset_name
         self.transform = transforms
         self.task =task
@@ -333,7 +333,7 @@ class Underwater_Dataset(data.Dataset):
     def _load_datasets(self):
         #Underwater datasets
         if self.underwater_dataset_name == "HICRD":
-            self.train_img_a, self.test_img_a, self.val_img_a = load_HICRD_paths()
+            self.train_img_u, self.test_img_u, self.val_img_u = load_HICRD_paths()
             self.train_img_b, self.test_img_b, self.val_img_b = load_HICRD_paths_annt()
         elif self.underwater_dataset_name == "LSUI":
             self.train_img_u, self.test_img_u, self.val_img_u = load_LSUI_paths()
@@ -364,30 +364,30 @@ class Underwater_Dataset(data.Dataset):
         # Retorna as imagens de treino e teste relativo ao treino nao supervisionado e supervisionado
         if self.supervised:
             if self.task == "train":
-                img_path_a = self.train_img_a[idx]
+                img_path_a = self.train_img_u[idx]
                 img_path_b = self.train_img_b[idx]
                 img_a= self.transform(image=load_image(img_path_a))
                 img_b= self.transform(image=load_image(img_path_b))
             elif self.task == "test":
-                img_path_a = self.test_img_a[idx]
+                img_path_a = self.test_img_u[idx]
                 img_path_b = self.test_img_b[idx]
                 img_a= self.transform(image=load_image(img_path_a))
                 img_b= self.transform(image=load_image(img_path_b))
             else:
-                img_path_a = self.val_img_a[idx]
+                img_path_a = self.val_img_u[idx]
                 img_path_b = self.val_img_b[idx]
                 img_a= self.transform(image=load_image(img_path_a))
                 img_b= self.transform(image=load_image(img_path_b))
             return img_a["image"], img_b["image"]
         else:
             if self.task == "train":
-                img_path_a = self.train_img_a[idx]
-                img= self.transform(image=load_image(img_path_a))  # Implement `load_image` to load an image from a file path
+                img_path_a = self.train_img_u[idx]
+                img= self.transform(image=load_image(img_path_a))# Implement `load_image` to load an image from a file path
             elif self.task == "test":
-                img_path_a = self.test_img_a[idx]
-                img= self.transform(image=load_image(img_path_a)) 
+                img_path_a = self.test_img_u[idx]
+                img= self.transform(image=load_image(img_path_a))
             else:
-                img_path_a = self.val_img_a[idx]
+                img_path_a = self.val_img_u[idx]
                 img= self.transform(image=load_image(img_path_a)) 
             return img["image"], img["image"]
     
