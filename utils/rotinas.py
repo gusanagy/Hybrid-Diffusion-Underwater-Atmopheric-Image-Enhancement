@@ -432,34 +432,6 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     #o dato esta sendo carregado dependendo do stage entao nem sempre todoas as loss tem resultado calculado logo nao da pra logar todas desta maneira
     
     [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss] = trainer(input, label, stage)
-    
-    # print("\n\n\n",loss.shape)
-    # print(      mse_loss.shape)
-    # print(       perceptual_vgg)
-    # print(        perceptual_dino.shape)
-    # print(       msssim.shape)
-    # print(         charbonnier)
-    # print(        col_loss)
-
-    # if stage ==0:
-    #     [loss, mse_loss, perceptual_dino, msssim] = trainer(input, label, stage)
-    #     loss = loss.mean()
-    #     mse_loss = mse_loss.mean()
-    #     msssim = msssim.mean()
-    #     perceptual_dino = perceptual_dino.mean()
-    # elif stage == 1:
-    #     [loss, mse_loss, perceptual_vgg, charbonnier] = trainer(input, label, stage)
-    #     loss = loss.mean()
-    #     mse_loss = mse_loss.mean()
-    #     perceptual_vgg = perceptual_vgg.mean()
-    #     charbonnier = charbonnier.mean()
-    # elif stage == 2:
-    #     [loss, mse_loss, charbonnier, msssim, col_loss] = trainer(input, label, stage)
-    #     loss = loss.mean()
-    #     mse_loss = mse_loss.mean()
-    #     msssim = msssim.mean()
-    #     charbonnier = charbonnier.mean()
-    #     col_loss = col_loss.mean()
 
 
     # Backpropagation e atualização dos parâmetros
@@ -557,9 +529,9 @@ def save_checkpoint(net_model, ckpt_savedir, e, config, stage, dataset_name):
     else:
         torch.save(net_model.state_dict(), checkpoint_path)
 
-def test_function():
-    pass
+
 def Test(config: Dict,epoch):
+
     pass
 def Inference(config: Dict,epoch):
     pass
@@ -763,6 +735,352 @@ def train_last(config: Dict):
     print("Training completed.")
 
 
+##########################
+### Teste e Inferencia ###
+##########################
+
+def process_batch_inference(sampler, input, label, device, net_model, config, stage):
+    """
+    Processa um batch para inferência: move para o dispositivo, faz a inferência e calcula as métricas.
+    """
+    input, label = input.to(device), label.to(device)
+    
+    # Colocar o modelo em modo de avaliação
+    net_model.eval()
+    
+    # Inferência: passagem direta (sem cálculo de perdas ou backprop)
+    with torch.no_grad():
+        output = net_model(input)
+    
+    # Calcular métricas (exemplo: MSE, SSIM, etc.)
+    [] = sampler(input, label, stage)
+
+    return 
+
+def log_metrics_inference(wandb_, loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, tqdmDataLoader, num, stage):
+    """
+    Registra as métricas durante a inferência.
+    """
+    metrics = {
+        "loss": None,
+        "mse_loss": None,
+        "Perceptual_dino": None,
+        "Perceptual_vgg": None,
+        "MS_SSIM": None,
+        "Charbonnier": None,
+        "ang_color_loss": None
+    }
+
+    # Processar cada métrica
+    for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, perceptual_vgg, msssim, charbonnier, col_loss]):
+        try:
+            metrics[key] = value.mean().item()
+        except Exception as ex:
+            pass
+
+    # Atualizar tqdmDataLoader
+    tqdmDataLoader.set_postfix(ordered_dict={
+        "num": num + 1,
+        **{k: (v if v is not None else "Error") for k, v in metrics.items()},
+    })
+
+    # Registrar no wandb
+    if wandb_:
+        wandb.log({f"Inference {stage}": {**metrics, "num": num + 1}})
+
+def inference_with_dataloaders(dataloaders, device, net_model, config, stage):
+    """
+    Realiza a inferência no modelo alternando entre DataLoaders.
+    """
+    iterators = [iter(dataloader) for dataloader in dataloaders]
+    active_loaders = [True] * len(dataloaders)  # Marca quais DataLoaders ainda têm batches
+
+    num = 0
+    with tqdm(total=sum(len(dataloader) for dataloader in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
+        while any(active_loaders):  # Continua enquanto houver loaders ativos
+            for i, iterator in enumerate(iterators):
+                if not active_loaders[i]:
+                    continue  # Pule se o DataLoader já foi completamente percorrido
+
+                try:
+                    input, label = next(iterator)  # Obter o próximo batch
+                    
+                    # Processar batch de inferência
+                    loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, output = process_batch_inference(
+                        input, label, device, net_model, config, stage
+                    )
+
+                    # Logar métricas
+                    log_metrics_inference(config.wandb, loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, tqdmDataLoader, num, stage)
+                    
+                    # Salvar as imagens
+                    save_images(output, input, label, config, stage, num)
+
+                    num += 1
+                    tqdmDataLoader.update(1)
+
+                except StopIteration:
+                    # Marcar o DataLoader como concluído
+                    active_loaders[i] = False
+
+    return num
+
+def save_images(output, input, label, config, stage, num):
+    """
+    Salva as imagens de entrada, rótulo e saída (inferida) em uma pasta de output.
+    """
+    os.makedirs(config.output_path, exist_ok=True)
+    #modificar para o formato das imagens ideal e salvar na pasta. receber o endereco config e nome da pasta a ser modificada
+    # Salvar as imagens
+    output_image = output[0].cpu().detach().numpy().transpose(1, 2, 0)  # Transpor para HxWxC
+    
+    # Converter para imagem (exemplo com matplotlib)
+    plt.imsave(os.path.join(config.output_path, f'output_{stage}_{num}.png'), output_image)
+    
+def test_new(config: Dict, epoch: int):
+    """
+    Função principal para a execução do teste no modelo.
+    """
+
+    #######################################################
+    #### Inicialização dos dados para a rotina de treino ###
+    #######################################################
+    underwater_data = Underwater_Dataset(config.underwater_data_name)
+    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name)
+
+    dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+    dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+
+    device = config.device_list[0]  # Usando o primeiro dispositivo disponível
+    
+    #####################################################
+    ### Inicialização do modelo, otimizador e trainer ###
+    #####################################################
+    net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
+                            num_res_blocks=config.num_res_blocks, dropout=config.dropout)
+    ckpt = torch.load(config.pretrained_path, map_location='cpu')
+    #ckpt_path = os.path.join(config.output_path, 'ckpt', f'ckpt_{epoch}_final_{config.underwater_data_name+config.atmospheric_data_name}.pt')
+    
+    ckpt = torch.load(config.pretrained_path, map_location='cpu')
+    net_model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
+
+    net_model = net_model.to(device)
+    
+    # Colocar o modelo em modo de avaliação
+    net_model.eval()
+
+    sampler = GaussianDiffusionSampler(
+        net_model, config.beta_1, config.beta_T, config.T).to(device)
+    
+    log_savedir = os.path.join(config.output_path, 'logs')
+    os.makedirs(log_savedir, exist_ok=True)
+
+    ckpt_savedir = os.path.join(config.output_path, 'ckpt')
+    os.makedirs(ckpt_savedir, exist_ok=True)
+
+    
+    # Inicializar datasets e dataloaders
+    underwater_data = Underwater_Dataset(config.underwater_data_name)
+    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name)
+    dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+    dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+    
+
+    save_dir_u="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.underwater_data_name+"/"
+    save_dir_a="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.atmospheric_data_name+"/"
+
+    if not os.path.exists(save_dir_u):
+        os.makedirs(save_dir_u)
+    if not os.path.exists(save_dir_a):
+        os.makedirs(save_dir_a)
+
+    print(f"Save dir underwater for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_u}")
+    print(f"Save dir atmospheric for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_a}")
+
+    save_txt_name_u =save_dir_u + 'res.txt'
+    save_txt_name_a =save_dir_a + 'res.txt'
+    f = open(save_txt_name_u, 'w+');    f.close()
+    f = open(save_txt_name_a, 'w+');    f.close()
+        
+    image_num = 0
+    psnr_list = []
+    ssim_list = []
+    uciqe_list = []
+    uiqm_list =[]
+    fid = []
+    wout = []
+
+ 
+    model.eval()
+    sampler = GaussianDiffusionSampler(
+        model, config.beta_1, config.beta_T, config.T).to(device)
+    #loss_fn_vgg=lpips.LPIPS(net='vgg')
+    # Executar inferência nos dados
+    dataloaders = [dataloader_u, dataloader_a]
+    inference_with_dataloaders(dataloaders, device, net_model, config, stage="Test")
+    
+    print("Test completed.")
+
+
+def Test(config: Dict,epoch):
+   
+    #######################################################
+    #### Inicialização dos dados para a rotina de treino ###
+    #######################################################
+    underwater_data = Underwater_Dataset(config.underwater_data_name)
+    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name)
+
+    dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+    dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+
+    device = config.device_list[0]  # Usando o primeiro dispositivo disponível
+    
+    #####################################################
+    ### Inicialização do modelo, otimizador e trainer ###
+    #####################################################
+
+
+    model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
+                 attn=config.attn,
+                 num_res_blocks=config.num_res_blocks, dropout=0.)
+    #Mudar um pouco aqui para carregar o checkpoint do dataset escolhido
+    ckpt = torch.load(config.pretrained_path,map_location='cpu')
+    model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
+    print("model load weight done.")
+
+
+    save_dir_u="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.underwater_data_name+"/"
+    save_dir_a="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.atmospheric_data_name+"/"
+
+    save_concate=config.output_path+'result/'+ config.dataset +'/epoch/'+str(epoch)+'concate'+'/'
+
+    if not os.path.exists(save_dir_u):
+        os.makedirs(save_dir_u)
+    if not os.path.exists(save_dir_a):
+        os.makedirs(save_dir_a)
+
+    print(f"Save dir underwater for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_u}")
+    print(f"Save dir atmospheric for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_a}")
+
+    save_txt_name_u =save_dir_u + 'res.txt'
+    save_txt_name_a =save_dir_a + 'res.txt'
+    f = open(save_txt_name_u, 'w+');    f.close()
+    f = open(save_txt_name_a, 'w+');    f.close()
+        
+    image_num = 0
+    psnr_list = []
+    ssim_list = []
+    #lpips_list=[]
+    uciqe_list = []
+    uiqm_list =[]
+    wout = []
+
+ 
+    model.eval()
+    sampler = GaussianDiffusionSampler(
+        model, config.beta_1, config.beta_T, config.T).to(device)
+     
+    with torch.no_grad():
+        with tqdm( dataloader_u, dynamic_ncols=True) as tqdmDataLoader:
+                image_num = 0
+                for input_image, gt_image, filename in tqdmDataLoader:
+                    name=filename[0].split('/')[-1]
+                    print('Image:',name)
+                    gt_image = gt_image.to(device)
+                    input_image = input_image.to(device)
+                        
+                    time_start = time.time()
+                    sampledImgs = sampler(input_image,ddim=True,
+                                          unconditional_guidance_scale=1,ddim_step=config.ddim_step)
+                    time_end=time.time()
+                    print('time cost:', time_end - time_start)
+
+                    sampledImgs=(sampledImgs+1)/2
+                    gt_image=(gt_image+1)/2
+                    input_image=(input_image+1)/2
+                    res_Imgs=np.clip(sampledImgs.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1] 
+                    gt_img=np.clip(gt_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
+                    input_image=np.clip(input_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
+                    
+                    
+                    # Compute METRICS
+
+                    ## compute psnr
+                    psnr = PSNR(res_Imgs, gt_img)
+                    #ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255)
+                    res_gray = rgb2gray(res_Imgs)
+                    gt_gray = rgb2gray(gt_img)
+
+                    ssim_score = SSIM(res_gray, gt_gray, multichannel=True,data_range=1)\
+                    
+                    psnr_list.append(psnr)
+                    ssim_list.append(ssim_score)
+                    
+
+                    # show result
+                    output = np.concatenate([input_image, gt_img, res_Imgs], axis=1) / 255
+                    # plt.axis('off')
+                    # plt.imshow(output)
+                    # plt.show()
+                    save_path = save_concate + name
+                    cv2.imwrite(save_path, output)
+
+                    save_path =save_dir + name
+                    cv2.imwrite(save_path, res_Imgs*255)
+                 
+    #Metrics
+    #UIQM e UCIQE
+    print("Calculationg Metrics\n")
+    a = list_images(save_dir)
+    print(f"calculando {len(a)} amostras")
+    
+    for path in a:
+        res_Imgs = cv2.imread(path)
+        uiqm,_= nmetrics(res_Imgs)
+        uciqe_ = uciqe(nargin=1,loc=res_Imgs)
+        print(f"uiqm: {uiqm}, uciqe: {uciqe_}")
+        uiqm_list.append(uiqm)
+        uciqe_list.append(uciqe_)
+    #AVERAGE SSIM PSNR UICM UCIQE
+    avg_psnr = sum(psnr_list) / len(psnr_list)
+    avg_ssim = sum(ssim_list) / len(ssim_list)
+    avg_uiqm = sum(uiqm_list) / len(uiqm_list)
+    avg_uciqe = sum(uciqe_list) / len(uciqe_list)                 
+
+    f = open(save_txt_name, 'w+')
+              
+    """ f.write('\nuiqm_list :')
+    f.write(str(uiqm_list))
+    f.write('\nuciqe_list :')
+    f.write(str(uciqe_list))
+    f.write('\nuism_list :') """
+
+    f.write('\npsnr_orgin_avg:')
+    f.write(str(avg_psnr))
+    f.write('\nssim_orgin_avg:')
+    f.write(str(avg_ssim))
+    f.write('\nuiqm_orgin_avg:')
+    f.write(str(avg_uiqm))
+    f.write('\nuciqe_orgin_avg:')
+    f.write(str(avg_uciqe))
+
+    f.close()
+
+    
+    # Wandb logs 
+    wandb.log({"Test "+config.dataset:{
+                     "Average PSNR": avg_psnr,
+                     "Average SSIM": avg_ssim,
+                     "Average UIQM": avg_uiqm,
+                     "Average UCIQE": avg_uciqe,
+                     "Test from epoch": epoch,
+                     "Image ":wout
+                     }})
+    print(f"""
+            Test From epoch {epoch} DONE 
+            """)
+                #return avg_psnr,avg_ssim
+    #plot_images(wout)
 
 
 ########################################
