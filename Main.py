@@ -8,12 +8,12 @@ def main(model_config = None):
     ## Mudar parametros para o modelo que irei usar. Utilizar parse para carregar o m etodo. Ajustar Wandb para uso e plot dos reultados 
     modelConfig = {
         "DDP": False,
-        "state": "train", # or eval
+        #"state": "train", # or eval
         "supervised": True,
         "underwater_dataset_name": "UIEB",
         "atmospheric_dataset_name": "HDR+",
         "epoch": 1000,
-        "batch_size": 16,
+        #"batch_size": 16,
         "T": 1000,
         "channel": 64,
         "channel_mult": [1, 2, 2, 2],
@@ -43,7 +43,7 @@ def main(model_config = None):
     parser.add_argument('--model', type=str, default="standart")
     parser.add_argument('--dataset_path', type=str, default="./data/")
     parser.add_argument('--state', type=str, default="train")  #or eval
-    parser.add_argument('--pretrained_path', type=str, default=None)  #or eval
+    parser.add_argument('--pretrained_path', type=str, default=None)  #or eval output/ckpt/ckpt_1000_final_UIEBTM-DIED.pt
     parser.add_argument('--inference_image', type=str, default="")  #or eval
     parser.add_argument('--output_path', type=str, default="./output/")  #or eval
     parser.add_argument('--wandb', type=bool, default=False)  #or False
@@ -81,10 +81,13 @@ def main(model_config = None):
     print(config.epoch)
 
     if config.state == 'eval':
-        Test(config, config.epoch)
+        print("Avaliando modelo")
+        val(config, config.epoch)
     elif config.state == 'train':
+        print("Treinando modelo")
         train(config)
     elif config.state == 'inference':
+        print("Inferindo modelo")
         Inference(config,config.epoch)
     else:
         print("Invalid state")

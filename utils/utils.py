@@ -74,19 +74,8 @@ def split_data(data_list, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2, shuffl
 
     return train_data, test_data, val_data
 
-"""
-fazer nova funcao para carregar os enderecos dos datasets e suas validacoes
-Estou confundindo imagem pra treino, pra teste, para validacao e dado anotado
-
-as imagens para teste e treino podem ter anoitação e devem seguir a proporcao de treino teste e validacao.
-
-ja as imagens de validacao nao precisam ter anotacao, mas caso haja nao tem problema. A rede nunca ira ver as imagens de validacao
-nem na rotina de treino nem de teste. Apenas na validacao final. 
-
-Fazer o load dos dados anotados para as metricas posteriormente.
 
 
-"""
 # nao sera usado
 def load_EUVP_paths(dataset_path = "data/EUVP",split=False): #errado Arrumar, usar apenas as imagens do treino A 
      # Inicializa as listas para os caminhos das imagens
@@ -262,13 +251,15 @@ class Atmospheric_Dataset(data.Dataset):
     def _load_datasets(self):
         # Load dataset paths based on the dataset name
         #Atmospheric Dataset
-        if self.dataset_name == "HDR+":
+        if self.dataset_name == "HDR":
             self.train_img_a, self.test_img_a, self.val_img_a = load_HDR_paths()
             self.train_img_b, self.test_img_b, self.val_img_b = load_HDR_paths_annt()
         elif self.dataset_name == "TM-DIED":# nao tem dados anotados logo serao usados os mesmos dados de entrada para treino e teste
             self.train_img_a, self.test_img_a, self.val_img_a = load_TM_DIED_paths()
             self.train_img_b, self.test_img_b, self.val_img_b = load_TM_DIED_paths()
-     
+        else:
+            raise ValueError(
+                f"Dataset {self.dataset_name} not found. Choose between 'EUVP', 'HDR+', 'HICRD', 'LSUI', 'TM-DIED', 'UIEB' or 'RUIE'")
     def __len__(self):
         #Seleciona o tamanho do dataset a ser usado baseado na combinação escolhida
         if self.task == "train":
@@ -300,7 +291,7 @@ class Atmospheric_Dataset(data.Dataset):
                 img_path_b = self.val_img_b[idx]
                 img_a= self.transform(image=load_image(img_path_a))
                 img_b= self.transform(image=load_image(img_path_b))
-                return img_a["image"], img_b["image"]
+                return img_a["image"], img_b["image"], img_path_a.split("/")[-1]
         else:
             if self.task == "train":
                 img_path_a = self.train_img_a[idx]

@@ -472,7 +472,7 @@ class DynamicUNet(nn.Module):
                 else:  # Freeze subaquatic layers (even-indexed)
                     for param in layer.parameters():
                         param.requires_grad = False
-    def forward(self, x, t, labels, context_zero=True):
+    def forward(self, x, t, labels=None, context_zero=True):
         # Ajuste dinâmico dos middleblocks com base no tipo de entrada
         self.dynamic_forward(x)
         #Time embedding from Diffusion

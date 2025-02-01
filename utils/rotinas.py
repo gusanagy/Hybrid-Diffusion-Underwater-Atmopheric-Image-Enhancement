@@ -35,6 +35,8 @@ import wandb
 import random
 import matplotlib.pyplot as plt
 from utils.utils import *
+from torchvision.transforms.functional import rgb_to_grayscale
+from metrics.metrics import *
 #from itertools import cycle
 
 
@@ -927,8 +929,8 @@ def Test(config: Dict,epoch):
     #######################################################
     #### Inicialização dos dados para a rotina de treino ###
     #######################################################
-    underwater_data = Underwater_Dataset(config.underwater_data_name)
-    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name)
+    underwater_data = Underwater_Dataset(config.underwater_data_name,task="test")
+    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name,task="test")
 
     dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
     dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
@@ -939,9 +941,7 @@ def Test(config: Dict,epoch):
     ### Inicialização do modelo, otimizador e trainer ###
     #####################################################
 
-
     model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
-                 attn=config.attn,
                  num_res_blocks=config.num_res_blocks, dropout=0.)
     #Mudar um pouco aqui para carregar o checkpoint do dataset escolhido
     ckpt = torch.load(config.pretrained_path,map_location='cpu')
@@ -951,9 +951,7 @@ def Test(config: Dict,epoch):
 
     save_dir_u="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.underwater_data_name+"/"
     save_dir_a="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.atmospheric_data_name+"/"
-
-    save_concate=config.output_path+'result/'+ config.dataset +'/epoch/'+str(epoch)+'concate'+'/'
-
+    print(save_dir_a, save_dir_u)
     if not os.path.exists(save_dir_u):
         os.makedirs(save_dir_u)
     if not os.path.exists(save_dir_a):
@@ -966,26 +964,30 @@ def Test(config: Dict,epoch):
     save_txt_name_a =save_dir_a + 'res.txt'
     f = open(save_txt_name_u, 'w+');    f.close()
     f = open(save_txt_name_a, 'w+');    f.close()
-        
+    fid_score = FID(device=device)
     image_num = 0
     psnr_list = []
     ssim_list = []
-    #lpips_list=[]
     uciqe_list = []
+    uiconm_list = []
+    uism_list = []
+    uicm_list =[]
     uiqm_list =[]
+    fid_list = []
     wout = []
 
  
     model.eval()
     sampler = GaussianDiffusionSampler(
         model, config.beta_1, config.beta_T, config.T).to(device)
-     
+    print("model load weight done.")
+    print(f"Avaliando Modelo {config.pretrained_path.split('/')[-1]} subaquatico {config.underwater_data_name}\n")
     with torch.no_grad():
         with tqdm( dataloader_u, dynamic_ncols=True) as tqdmDataLoader:
                 image_num = 0
-                for input_image, gt_image, filename in tqdmDataLoader:
-                    name=filename[0].split('/')[-1]
-                    print('Image:',name)
+                for input_image, gt_image, name in tqdmDataLoader:
+                    #print('Image:',name)
+
                     gt_image = gt_image.to(device)
                     input_image = input_image.to(device)
                         
@@ -993,98 +995,434 @@ def Test(config: Dict,epoch):
                     sampledImgs = sampler(input_image,ddim=True,
                                           unconditional_guidance_scale=1,ddim_step=config.ddim_step)
                     time_end=time.time()
-                    print('time cost:', time_end - time_start)
+                    print('time cost:', time_end - time_start, "\n")
 
                     sampledImgs=(sampledImgs+1)/2
-                    gt_image=(gt_image+1)/2
-                    input_image=(input_image+1)/2
-                    res_Imgs=np.clip(sampledImgs.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1] 
-                    gt_img=np.clip(gt_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
-                    input_image=np.clip(input_image.detach().cpu().numpy()[0].transpose(1, 2, 0),0,1)[:,:,::-1]
                     
+                    fid_score = fid_score.compute_fid(sampledImgs,gt_image)
+                    #print(sampledImgs.shape, res_Imgs.shape, gt_img.shape, input_image.shape)
+                    for i in range(sampledImgs.shape[0]):
+                        
+                        res_Imgs = np.clip(sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                        gt_img = np.clip(gt_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                        input_image = np.clip(input_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                                              
+                        psnr = PSNR(res_Imgs, gt_img,data_range=255)
+                        uiqm0,uciqe0,uism,uicm,uiconm = nmetrics(res_Imgs)
+                        #uciqe1 = uciqe(nargin=1,loc=res_Imgs)
+
+                        ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255,multichannel=True)
+                        #uciqe2 = uciqe(nargin=1,loc=res_Imgs)#usarei este
+                        uiqm1 = getUIQM(res_Imgs)
+                        
+
+                        uciqe_list.append(uciqe0)  
+                        uiqm_list.append(uiqm1)
+                        psnr_list.append(psnr)
+                        ssim_list.append(ssim)
+                        fid_list.append(fid_score)
+                        uism_list.append(uism)
+                        uicm_list.append(uicm)
+                        uiconm_list.append(uiconm)
+                        cv2.imwrite(save_dir_u+name[i],res_Imgs)
+                        
+                        # print(f"""
+                        #       uiqm0 : {uiqm0},  
+                        #       uiqm1: {uiqm1}, usar
+                        #       uciqe0: {uciqe0},
+
+                        #       uism: {uism},
+                        #       uicm: {uicm},
+                        #       uiconm: {uiconm},
+
+                        #       ssim: {ssim}, 
+                        #       psnr: {psnr}, 
+                        #       fid: {fid_score}, 
+                        # """)
+
+                #AVERAGE SSIM PSNR UICM UCIQE
+                avg_psnr = sum(psnr_list) / len(psnr_list)
+                avg_ssim = sum(ssim_list) / len(ssim_list)
+                avg_uiqm = sum(uiqm_list) / len(uiqm_list)
+                avg_uciqe = sum(uciqe_list) / len(uciqe_list)       
+                avg_uism = sum(uism_list) / len(uism_list)    
+                avg_uicm = sum(uicm_list) / len(uicm_list)
+                avg_fid = sum(fid_list) / len(fid_list)
+                avg_uiconm = sum(uiconm_list) / len(uiconm_list)
+                        
+                f = open(save_txt_name_u, 'w+')
+
+                f.write('\npsnr_orgin_avg:')
+                f.write(str(avg_psnr))
+                f.write('\nssim_orgin_avg:')
+                f.write(str(avg_ssim))
+                f.write('\nfid_orgin_avg:')
+                f.write(str(avg_fid))
+                f.write('\nuiqm_orgin_avg:')
+                f.write(str(avg_uiqm))
+                f.write('\nuciqe_orgin_avg:')
+                f.write(str(avg_uciqe))
+                f.write('\nuism_orgin_avg:')
+                f.write(str(avg_uism))
+                f.write('\nuicm_orgin_avg:')
+                f.write(str(avg_uicm))
+                f.write('\nuiconm_orgin_avg:')
+                f.write(str(avg_uiconm))
+
+
+                f.close()
+        #reinicieando listas de dados
+        psnr_list = []
+        ssim_list = []
+        uciqe_list = []
+        uiconm_list = []
+        uism_list = []
+        uicm_list =[]
+        uiqm_list =[]
+        fid_list = []
+        print(f"Avaliando Modelo {config.pretrained_path.split('/')[-1]} subaquatico {config.underwater_data_name}\n")
+        with tqdm( dataloader_a, dynamic_ncols=True) as tqdmDataLoader:
+                image_num = 0
+                for input_image, gt_image, name in tqdmDataLoader:
+                    #print('Image:',name)
+
+                    gt_image = gt_image.to(device)
+                    input_image = input_image.to(device)
+                        
+                    time_start = time.time()
+                    sampledImgs = sampler(input_image,ddim=True,
+                                          unconditional_guidance_scale=1,ddim_step=config.ddim_step)
+                    time_end=time.time()
+                    print('time cost:', time_end - time_start, "\n")
+
+                    sampledImgs=(sampledImgs+1)/2
                     
-                    # Compute METRICS
+                    fid_score = fid_score.compute_fid(sampledImgs,gt_image)
+                    #print(sampledImgs.shape, res_Imgs.shape, gt_img.shape, input_image.shape)
+                    for i in range(sampledImgs.shape[0]):
+                        
+                        res_Imgs = np.clip(sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                        gt_img = np.clip(gt_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                        input_image = np.clip(input_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                                              
+                        psnr = PSNR(res_Imgs, gt_img,data_range=255)
+                        uiqm0,uciqe0,uism,uicm,uiconm = nmetrics(res_Imgs)
+                        #uciqe1 = uciqe(nargin=1,loc=res_Imgs)
 
-                    ## compute psnr
-                    psnr = PSNR(res_Imgs, gt_img)
-                    #ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255)
-                    res_gray = rgb2gray(res_Imgs)
-                    gt_gray = rgb2gray(gt_img)
+                        ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255,multichannel=True)
+                        #uciqe2 = uciqe(nargin=1,loc=res_Imgs)#usarei este
+                        uiqm1 = getUIQM(res_Imgs)
+                        
 
-                    ssim_score = SSIM(res_gray, gt_gray, multichannel=True,data_range=1)\
-                    
-                    psnr_list.append(psnr)
-                    ssim_list.append(ssim_score)
-                    
+                        uciqe_list.append(uciqe0)  
+                        uiqm_list.append(uiqm1)
+                        psnr_list.append(psnr)
+                        ssim_list.append(ssim)
+                        fid_list.append(fid_score)
+                        uism_list.append(uism)
+                        uicm_list.append(uicm)
+                        uiconm_list.append(uiconm)
+                        cv2.imwrite(save_dir_a+name[i],res_Imgs)
+                        
+                        # print(f"""
+                        #       uiqm0 : {uiqm0},  
+                        #       uiqm1: {uiqm1}, usar
+                        #       uciqe0: {uciqe0},
 
-                    # show result
-                    output = np.concatenate([input_image, gt_img, res_Imgs], axis=1) / 255
-                    # plt.axis('off')
-                    # plt.imshow(output)
-                    # plt.show()
-                    save_path = save_concate + name
-                    cv2.imwrite(save_path, output)
+                        #       uism: {uism},
+                        #       uicm: {uicm},
+                        #       uiconm: {uiconm},
 
-                    save_path =save_dir + name
-                    cv2.imwrite(save_path, res_Imgs*255)
-                 
-    #Metrics
-    #UIQM e UCIQE
-    print("Calculationg Metrics\n")
-    a = list_images(save_dir)
-    print(f"calculando {len(a)} amostras")
-    
-    for path in a:
-        res_Imgs = cv2.imread(path)
-        uiqm,_= nmetrics(res_Imgs)
-        uciqe_ = uciqe(nargin=1,loc=res_Imgs)
-        print(f"uiqm: {uiqm}, uciqe: {uciqe_}")
-        uiqm_list.append(uiqm)
-        uciqe_list.append(uciqe_)
-    #AVERAGE SSIM PSNR UICM UCIQE
-    avg_psnr = sum(psnr_list) / len(psnr_list)
-    avg_ssim = sum(ssim_list) / len(ssim_list)
-    avg_uiqm = sum(uiqm_list) / len(uiqm_list)
-    avg_uciqe = sum(uciqe_list) / len(uciqe_list)                 
+                        #       ssim: {ssim}, 
+                        #       psnr: {psnr}, 
+                        #       fid: {fid_score}, 
+                        # """)
 
-    f = open(save_txt_name, 'w+')
-              
-    """ f.write('\nuiqm_list :')
-    f.write(str(uiqm_list))
-    f.write('\nuciqe_list :')
-    f.write(str(uciqe_list))
-    f.write('\nuism_list :') """
+                #AVERAGE SSIM PSNR UICM UCIQE
+                avg_psnr = sum(psnr_list) / len(psnr_list)
+                avg_ssim = sum(ssim_list) / len(ssim_list)
+                avg_uiqm = sum(uiqm_list) / len(uiqm_list)
+                avg_uciqe = sum(uciqe_list) / len(uciqe_list)       
+                avg_uism = sum(uism_list) / len(uism_list)    
+                avg_uicm = sum(uicm_list) / len(uicm_list)
+                avg_fid = sum(fid_list) / len(fid_list)
+                avg_uiconm = sum(uiconm_list) / len(uiconm_list)
+                        
+                f = open(save_txt_name_a, 'w+')
 
-    f.write('\npsnr_orgin_avg:')
-    f.write(str(avg_psnr))
-    f.write('\nssim_orgin_avg:')
-    f.write(str(avg_ssim))
-    f.write('\nuiqm_orgin_avg:')
-    f.write(str(avg_uiqm))
-    f.write('\nuciqe_orgin_avg:')
-    f.write(str(avg_uciqe))
+                f.write('\npsnr_orgin_avg:')
+                f.write(str(avg_psnr))
+                f.write('\nssim_orgin_avg:')
+                f.write(str(avg_ssim))
+                f.write('\nfid_orgin_avg:')
+                f.write(str(avg_fid))
+                f.write('\nuiqm_orgin_avg:')
+                f.write(str(avg_uiqm))
+                f.write('\nuciqe_orgin_avg:')
+                f.write(str(avg_uciqe))
+                f.write('\nuism_orgin_avg:')
+                f.write(str(avg_uism))
+                f.write('\nuicm_orgin_avg:')
+                f.write(str(avg_uicm))
+                f.write('\nuiconm_orgin_avg:')
+                f.write(str(avg_uiconm))
 
-    f.close()
 
-    
-    # Wandb logs 
-    wandb.log({"Test "+config.dataset:{
-                     "Average PSNR": avg_psnr,
-                     "Average SSIM": avg_ssim,
-                     "Average UIQM": avg_uiqm,
-                     "Average UCIQE": avg_uciqe,
-                     "Test from epoch": epoch,
-                     "Image ":wout
-                     }})
-    print(f"""
-            Test From epoch {epoch} DONE 
-            """)
-                #return avg_psnr,avg_ssim
-    #plot_images(wout)
+                f.close()
+    print("Test completed.")
 
 
 ########################################
-                
+
+
+def val(config: Dict,epoch):
+   
+    #######################################################
+    #### Inicialização dos dados para a rotina de treino ###
+    #######################################################
+    underwater_data = Underwater_Dataset(config.underwater_data_name,task="val")
+    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name,task="val")
+
+    dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+    dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+
+    device = config.device_list[0]  # Usando o primeiro dispositivo disponível
+    
+    #####################################################
+    ### Inicialização do modelo, otimizador e trainer ###
+    #####################################################
+
+
+    model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
+                 num_res_blocks=config.num_res_blocks, dropout=0.)
+    #Mudar um pouco aqui para carregar o checkpoint do dataset escolhido
+    ckpt = torch.load(config.pretrained_path,map_location='cpu')
+    model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
+    print("model load weight done.")
+
+
+    save_dir_u="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.underwater_data_name+"/"
+    save_dir_a="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.atmospheric_data_name+"/"
+    print(save_dir_a, save_dir_u)
+    if not os.path.exists(save_dir_u):
+        os.makedirs(save_dir_u)
+    if not os.path.exists(save_dir_a):
+        os.makedirs(save_dir_a)
+
+    print(f"Save dir underwater for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_u}")
+    print(f"Save dir atmospheric for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_a}")
+
+    save_txt_name_u =save_dir_u + 'res.txt'
+    save_txt_name_a =save_dir_a + 'res.txt'
+    f = open(save_txt_name_u, 'w+');    f.close()
+    f = open(save_txt_name_a, 'w+');    f.close()
+    fid_score = FID(device=device)
+    image_num = 0
+    psnr_list = []
+    ssim_list = []
+    uciqe_list = []
+    uiconm_list = []
+    uism_list = []
+    uicm_list =[]
+    uiqm_list =[]
+    fid_list = []
+    wout = []
+
+ 
+    model.eval()
+    sampler = GaussianDiffusionSampler(
+        model, config.beta_1, config.beta_T, config.T).to(device)
+    print("model load weight done.")
+    print(f"Avaliando Modelo {config.pretrained_path.split('/')[-1]} subaquatico {config.underwater_data_name}\n")
+    with torch.no_grad():
+        with tqdm( dataloader_u, dynamic_ncols=True) as tqdmDataLoader:
+                image_num = 0
+                for input_image, gt_image, name in tqdmDataLoader:
+                    #print('Image:',name)
+
+                    gt_image = gt_image.to(device)
+                    input_image = input_image.to(device)
+                        
+                    time_start = time.time()
+                    sampledImgs = sampler(input_image,ddim=True,
+                                          unconditional_guidance_scale=1,ddim_step=config.ddim_step)
+                    time_end=time.time()
+                    #print('time cost:', time_end - time_start, "\n")
+
+                    sampledImgs=(sampledImgs+1)/2
+                    
+                    fid = fid_score.compute_fid(sampledImgs,gt_image)
+                    #print(sampledImgs.shape, res_Imgs.shape, gt_img.shape, input_image.shape)
+                    for i in range(sampledImgs.shape[0]):
+                        
+                        res_Imgs = np.clip(sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                        gt_img = np.clip(gt_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                        #input_image = np.clip(input_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                                              
+                        psnr = PSNR(res_Imgs, gt_img,data_range=255)
+                        uiqm0,uciqe0,uism,uicm,uiconm = nmetrics(res_Imgs)
+                        #uciqe1 = uciqe(nargin=1,loc=res_Imgs)
+
+                        ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255,multichannel=True)
+                        #uciqe2 = uciqe(nargin=1,loc=res_Imgs)#usarei este
+                        uiqm1 = getUIQM(res_Imgs)
+                        
+
+                        uciqe_list.append(uciqe0)  
+                        psnr_list.append(psnr)
+                        ssim_list.append(ssim)
+                        fid_list.append(fid)
+                        uism_list.append(uism)
+                        uicm_list.append(uicm)
+                        uiconm_list.append(uiconm)
+                        cv2.imwrite(save_dir_u+name[i],res_Imgs)
+                        
+                        # print(f"""
+                        #       uiqm0 : {uiqm0},  
+                        #       uiqm1: {uiqm1}, usar
+                        #       uciqe0: {uciqe0},
+
+                        #       uism: {uism},
+                        #       uicm: {uicm},
+                        #       uiconm: {uiconm},
+
+                        #       ssim: {ssim}, 
+                        #       psnr: {psnr}, 
+                        #       fid: {fid_score}, 
+                        # """)
+
+                #AVERAGE SSIM PSNR UICM UCIQE
+                avg_psnr = sum(psnr_list) / len(psnr_list)
+                avg_ssim = sum(ssim_list) / len(ssim_list)
+                avg_uiqm = sum(uiqm_list) / len(uiqm_list)
+                avg_uciqe = sum(uciqe_list) / len(uciqe_list)       
+                avg_uism = sum(uism_list) / len(uism_list)    
+                avg_uicm = sum(uicm_list) / len(uicm_list)
+                avg_fid = sum(fid_list) / len(fid_list)
+                avg_uiconm = sum(uiconm_list) / len(uiconm_list)
+                        
+                f = open(save_txt_name_u, 'w+')
+
+                f.write('\npsnr_orgin_avg:')
+                f.write(str(avg_psnr))
+                f.write('\nssim_orgin_avg:')
+                f.write(str(avg_ssim))
+                f.write('\nfid_orgin_avg:')
+                f.write(str(avg_fid))
+                f.write('\nuiqm_orgin_avg:')
+                f.write(str(avg_uiqm))
+                f.write('\nuciqe_orgin_avg:')
+                f.write(str(avg_uciqe))
+                f.write('\nuism_orgin_avg:')
+                f.write(str(avg_uism))
+                f.write('\nuicm_orgin_avg:')
+                f.write(str(avg_uicm))
+                f.write('\nuiconm_orgin_avg:')
+                f.write(str(avg_uiconm))
+
+
+                f.close()
+        #reinicieando listas de dados
+        psnr_list = []
+        ssim_list = []
+        uciqe_list = []
+        uiconm_list = []
+        uism_list = []
+        uicm_list =[]
+        uiqm_list =[]
+        fid_list = []
+        print(f"Avaliando Modelo {config.pretrained_path.split('/')[-1]} atmosferico {config.atmospheric_data_name}\n")
+        with tqdm( dataloader_a, dynamic_ncols=True) as tqdmDataLoader:
+                image_num = 0
+                for input_image, gt_image, name in tqdmDataLoader:
+                    #print('Image:',name)
+
+                    gt_image = gt_image.to(device)
+                    input_image = input_image.to(device)
+                        
+                    time_start = time.time()
+                    sampledImgs = sampler(input_image,ddim=True,
+                                          unconditional_guidance_scale=1,ddim_step=config.ddim_step)
+                    time_end=time.time()
+                    #print('time cost:', time_end - time_start, "\n")
+
+                    sampledImgs=(sampledImgs+1)/2
+                    
+                    fid = fid_score.compute_fid(sampledImgs,gt_image)
+                    #print(sampledImgs.shape, res_Imgs.shape, gt_img.shape, input_image.shape)
+                    for i in range(sampledImgs.shape[0]):
+                        
+                        res_Imgs = np.clip(sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                        gt_img = np.clip(gt_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
+                                              
+                        psnr = PSNR(res_Imgs, gt_img,data_range=255)
+                        uiqm0,uciqe0,uism,uicm,uiconm = nmetrics(res_Imgs)
+                        #uciqe1 = uciqe(nargin=1,loc=res_Imgs)
+
+                        ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255,multichannel=True)
+                        #uciqe2 = uciqe(nargin=1,loc=res_Imgs)#usarei este
+                        uiqm1 = getUIQM(res_Imgs)
+                        
+
+                        uciqe_list.append(uciqe0)  
+                        uiqm_list.append(uiqm1)
+                        psnr_list.append(psnr)
+                        ssim_list.append(ssim)
+                        fid_list.append(fid)
+                        uism_list.append(uism)
+                        uicm_list.append(uicm)
+                        uiconm_list.append(uiconm)
+                        #cv2.imwrite(save_dir_a+name[i],res_Imgs)
+                        
+                        # print(f"""
+                        #       uiqm0 : {uiqm0},  
+                        #       uiqm1: {uiqm1}, usar
+                        #       uciqe0: {uciqe0},
+
+                        #       uism: {uism},
+                        #       uicm: {uicm},
+                        #       uiconm: {uiconm},
+
+                        #       ssim: {ssim}, 
+                        #       psnr: {psnr}, 
+                        #       fid: {fid_score}, 
+                        # """)
+                        
+                    
+                #AVERAGE SSIM PSNR UICM UCIQE
+                avg_psnr = sum(psnr_list) / len(psnr_list)
+                avg_ssim = sum(ssim_list) / len(ssim_list)
+                avg_uiqm = sum(uiqm_list) / len(uiqm_list)
+                avg_uciqe = sum(uciqe_list) / len(uciqe_list)       
+                avg_uism = sum(uism_list) / len(uism_list)    
+                avg_uicm = sum(uicm_list) / len(uicm_list)
+                avg_fid = sum(fid_list) / len(fid_list)
+                avg_uiconm = sum(uiconm_list) / len(uiconm_list)
+                        
+                f = open(save_txt_name_a, 'w+')
+
+                f.write('\npsnr_orgin_avg:')
+                f.write(str(avg_psnr))
+                f.write('\nssim_orgin_avg:')
+                f.write(str(avg_ssim))
+                f.write('\nfid_orgin_avg:')
+                f.write(str(avg_fid))
+                f.write('\nuiqm_orgin_avg:')
+                f.write(str(avg_uiqm))
+                f.write('\nuciqe_orgin_avg:')
+                f.write(str(avg_uciqe))
+                f.write('\nuism_orgin_avg:')
+                f.write(str(avg_uism))
+                f.write('\nuicm_orgin_avg:')
+                f.write(str(avg_uicm))
+                f.write('\nuiconm_orgin_avg:')
+                f.write(str(avg_uiconm))
+
+
+                f.close()
+    print("Test completed.")
+
+
 
 
 

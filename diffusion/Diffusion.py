@@ -173,14 +173,20 @@ class GaussianDiffusionSampler(nn.Module):##terei que ajustar o diffusion sample
 
         return xt_prev_mean, var
 
-    def forward(self, lowlight_image, ddim=False, unconditional_guidance_scale=1, ddim_step=None):
+    def forward(self, input_image, ddim=False, unconditional_guidance_scale=1, ddim_step=None):
+        
+        # Nao lembro se a imagem que  entra esta entre -1 e 1 ou nao
+        input_image = input_image.float()/255.0
+        # gt_images = (gt_images.float()/255.0)*2-1
+
+
         if ddim == False:
-            device = lowlight_image.device
-            noise = torch.randn_like(lowlight_image).to(device)
+            device = input_image.device
+            noise = torch.randn_like(input_image).to(device)
             y_t = noise
             for time_step in reversed(range(self.T)):
                 t = y_t.new_ones([y_t.shape[0], ], dtype=torch.long) * time_step
-                input = torch.cat([lowlight_image, y_t], dim=1).float()
+                input = torch.cat([input_image, y_t], dim=1).float()
                 mean, var = self.p_mean_variance(input, t, y_t)
                 if time_step > 0:
                     noise = torch.randn_like(y_t)
@@ -192,8 +198,8 @@ class GaussianDiffusionSampler(nn.Module):##terei que ajustar o diffusion sample
             return torch.clip(y_0, -1, 1)
 
         else:
-            device = lowlight_image.device
-            noise = torch.randn_like(lowlight_image).to(device)
+            device = input_image.device
+            noise = torch.randn_like(input_image).to(device)
             y_t = noise
 
             step = 1000 / ddim_step
@@ -205,7 +211,7 @@ class GaussianDiffusionSampler(nn.Module):##terei que ajustar o diffusion sample
                 next_t = (torch.ones(y_t.shape[0]) * j).to(device).long()
                 at = extract(self.alphas_bar.to(device), (t + 1).long(), y_t.shape)
                 at_next = extract(self.alphas_bar.to(device), (next_t + 1).long(), y_t.shape)
-                input = torch.cat([lowlight_image, y_t], dim=1).float()
+                input = torch.cat([input_image, y_t], dim=1).float()
                 eps = self.model(input, t)
 
                 # CLASSIFIER FREE GUIDANCE
@@ -217,7 +223,7 @@ class GaussianDiffusionSampler(nn.Module):##terei que ajustar o diffusion sample
                 eta = 0
                 c1 = eta * ((1 - at / at_next) * (1 - at_next) / (1 - at)).sqrt()
                 c2 = ((1 - at_next) - c1 ** 2).sqrt()
-                y_t = at_next.sqrt() * y0_pred + c1 * torch.randn_like(lowlight_image) + c2 * eps
+                y_t = at_next.sqrt() * y0_pred + c1 * torch.randn_like(input_image) + c2 * eps
             y_0 = y_t
             return torch.clip(y_0, -1, 1)
 

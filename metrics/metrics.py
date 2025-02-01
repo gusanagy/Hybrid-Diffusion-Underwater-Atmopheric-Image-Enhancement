@@ -11,6 +11,8 @@ python evaluate.py RESULT_PATH
 '''
 #calcular UQIM
 #calcular UCIQE
+import torch
+import torch.nn as nn
 import numpy as np
 #from skimage.measure import compare_psnr, compare_ssim
 import math
@@ -26,6 +28,9 @@ from scipy import ndimage
 from PIL import Image
 import numpy as np
 import math
+from torchvision.models import inception_v3
+from torchvision.transforms import Compose, Lambda, ToTensor
+from scipy.linalg import sqrtm
 
 
 import cv2
@@ -35,7 +40,7 @@ import numpy as np
 def uciqe(nargin,loc):
     #img_bgr = cv2.imread(loc)        # Used to read image files
      
-    img_lab = cv2.cvtColor(loc, cv2.COLOR_BGR2LAB)  # Transform to Lab color space
+    img_lab = cv2.cvtColor(loc, cv2.COLOR_RGB2LAB)  # Transform to Lab color space
 
     if nargin == 1:                                 # According to training result mentioned in the paper:
         coe_metric = [0.4680, 0.2745, 0.2576]      # Obtained coefficients are: c1=0.4680, c2=0.2745, c3=0.2576.
@@ -377,7 +382,7 @@ def nmetrics(a):
     uiconm = logamee(gray)
 
     uiqm = p1 * uicm + p2 * uism + p3 * uiconm
-    return uiqm,uciqe,uism
+    return uiqm,uciqe,uism,uicm,uiconm
 
 def eme(ch,blocksize=8):
 
@@ -476,8 +481,10 @@ class FID:
         self.model.eval()
 
         self.transform = Compose([
-            Lambda(lambda x: x.permute(1, 2, 0).cpu().numpy()),  # Converte para formato HWC
-            Lambda(lambda x: np.clip((x * 255).astype(np.uint8), 0, 255)),  # Converte imagens HWC para x-RGB Uint FLAV
+            Lambda(lambda x: x.cpu().numpy().transpose(1, 2, 0)),  # Converte para formato HWC
+            #Lambda(lambda x: np.clip((x * 255).astype(np.uint8), 0, 255)),  # Converte imagens HWC para x-RGB Uint FLAV
+            Lambda(lambda x: np.clip(x, 0, 1) * 255),  # Clipa para [0, 1] e depois multiplica por 255
+            Lambda(lambda x: x.astype(np.uint8)),  # Converte para uint8    
             ToTensor()  # Converte de volta para torch.Tensor
         ])
     def _calculate_stats(self, features):
@@ -485,16 +492,7 @@ class FID:
         cov = np.cov(features, rowvar=False)
         return mean, cov
 
-    # def _frechet_distance(self, mu1, sigma1, mu2, sigma2):
-    #     diff = mu1 - mu2
-    #     covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
-
-    #     # Caso de matriz não positiva definida
-    #     if not np.isfinite(covmean).all():
-    #         offset = np.eye(sigma1.shape[0]) * 1e-6
-    #         covmean = sqrtm((sigma1 + offset) @ (sigma2 + offset))
-
-    #     return np.sum(diff**2) + np.trace(sigma1 + sigma2 - 2 * covmean)
+    
     def _frechet_distance(self, mu1, sigma1, mu2, sigma2):
         diff = mu1 - mu2
         covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
@@ -527,6 +525,7 @@ class FID:
             float: valor do FID
         """
         # Normalizar e redimensionar
+        #print(real_images.shape)
         real_images = torch.stack([self.transform(img) for img in real_images]).to(self.device)
         generated_images = torch.stack([self.transform(img) for img in generated_images]).to(self.device)
 
@@ -541,6 +540,71 @@ class FID:
         # Calcular FID
         fid = self._frechet_distance(mu1, sigma1, mu2, sigma2)
         return fid
+    import numpy as np
+
+
+class FID_broke:
+    def __init__(self, device="cpu"):
+        self.device = device
+        self.model = inception_v3(pretrained=True, transform_input=False).to(device)
+        self.model.fc = nn.Identity()  # Remove a última camada de classificação
+        self.model.eval()
+
+        self.transform = Compose([
+            Lambda(lambda x: torch.tensor(x.transpose(2, 0, 1), dtype=torch.float32) / 255.0),  # Converte para tensor [C, H, W]
+        ])
+
+    def _calculate_stats(self, features):
+        mean = np.mean(features, axis=0)
+        cov = np.cov(features, rowvar=False)
+        return mean, cov
+
+    def _frechet_distance(self, mu1, sigma1, mu2, sigma2):
+        diff = mu1 - mu2
+        covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
+
+        # Caso de matriz não positiva definida
+        if not np.isfinite(covmean).all() or np.iscomplexobj(covmean):
+            offset = np.eye(sigma1.shape[0]) * 1e-6
+            covmean = sqrtm((sigma1 + offset) @ (sigma2 + offset))
+
+        covmean = covmean.real  # Certifique-se de que o resultado seja real
+
+        return np.sum(diff**2) + np.trace(sigma1 + sigma2 - 2 * covmean)
+
+    def extract_features(self, images):
+        with torch.no_grad():
+            features = self.model(images).cpu().numpy()
+        return features
+
+    def compute_fid(self, real_images, generated_images):
+        """
+        Calcula o FID entre as imagens reais e geradas.
+
+        Args:
+            real_images (np.ndarray): Imagens reais no formato [H, W, C]
+            generated_images (np.ndarray): Imagens geradas no formato [H, W, C]
+
+        Returns:
+            float: valor do FID
+        """
+
+        # Normalizar e converter para tensor
+        real_images = torch.stack([self.transform(img) for img in real_images]).to(self.device)
+        generated_images = torch.stack([self.transform(img) for img in generated_images]).to(self.device)
+
+        # Extrair features
+        real_features = self.extract_features(real_images)
+        generated_features = self.extract_features(generated_images)
+
+        # Calcular estatísticas
+        mu1, sigma1 = self._calculate_stats(real_features)
+        mu2, sigma2 = self._calculate_stats(generated_features)
+
+        # Calcular FID
+        fid = self._frechet_distance(mu1, sigma1, mu2, sigma2)
+        return fid
+
 
 def main():
     #dataset val // dataset inferencia // dataset // author
