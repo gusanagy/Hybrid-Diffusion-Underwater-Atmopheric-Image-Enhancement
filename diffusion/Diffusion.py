@@ -95,10 +95,51 @@ class GaussianDiffusionTrainer(nn.Module):
         y_0_pred = 1 / extract(self.sqrt_alphas_bar, t, gt_images.shape) * (
                     y_t - extract(self.sqrt_one_minus_alphas_bar, t, gt_images.shape) * noise_pred).float() / 255.0
         
-        # Etapas 0 e 1 Aprendizado de caracteristicas Etapa 2 Realce de Imagem
+        # # Etapas 0 e 1 Aprendizado de caracteristicas Etapa 2 Realce de Imagem
+        # if self.stage == 0:
+        #     #MSE, Perceptual DINO, MS_SSIM 
+        #     dino_weight, msssim_weight = 1.0, 0.13 #definir pesos ao checar as escalar das funcoes de perda
+
+        #     perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
+        #     loss += perceptual_dino
+
+        #     msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
+        #     loss += msssim
+
+        # #    return loss, mse_loss, perceptual_dino, msssim
+
+        # elif self.stage == 1:
+        #     #MSE, Perceptual  VGG, Charbonnier
+        #     vgg_weight, charbonnier_weight = 1.0, 1.0
+
+        #     perceptual_vgg = self.loss_perceptual_vgg(y_0_pred, gt_images) * vgg_weight
+        #     loss += perceptual_vgg
+
+        #     charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
+        #     loss += charbonnier
+
+        # #    return loss, mse_loss, perceptual_vgg, charbonnier
+
+        # elif self.stage == 2:
+        #     #MSE, MS_SSIM, Charbonnier # Verdadeira etapa de realce
+        #     msssim_weight, charbonnier_weight,col_loss_weight = 1.0, 0.0028, 0.61
+
+        #     col_loss = self.color_loss(y_0_pred, gt_images) * col_loss_weight
+        #     loss += col_loss
+
+        #     charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
+        #     loss += charbonnier
+
+        #     msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
+        #     loss += msssim
+
+        #    return loss, mse_loss, msssim, charbonnier, col_loss
+        #return [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss]
+
+        # Etapas 0  Aprendizado de caracteristicas Etapa 2 Realce de Imagem
         if self.stage == 0:
             #MSE, Perceptual DINO, MS_SSIM 
-            dino_weight, msssim_weight = 1.0, 0.13 #definir pesos ao checar as escalar das funcoes de perda
+            dino_weight, msssim_weight, charbonnier_weight = 0.03, 0.03, 1.0  #definir pesos ao checar as escalar das funcoes de perda
 
             perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
             loss += perceptual_dino
@@ -106,23 +147,23 @@ class GaussianDiffusionTrainer(nn.Module):
             msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
             loss += msssim
 
-        #    return loss, mse_loss, perceptual_dino, msssim
-
-        elif self.stage == 1:
-            #MSE, Perceptual  VGG, Charbonnier
-            vgg_weight, charbonnier_weight = 1.0, 1.0
-
-            perceptual_vgg = self.loss_perceptual_vgg(y_0_pred, gt_images) * vgg_weight
-            loss += perceptual_vgg
-
             charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
             loss += charbonnier
 
-        #    return loss, mse_loss, perceptual_vgg, charbonnier
 
-        elif self.stage == 2:
+        elif self.stage == 1:
+            #MSE, Perceptual DINO, MS_SSIM 
+            dino_weight, msssim_weight = 0.03, 0.03 #definir pesos ao checar as escalar das funcoes de perda
+
             #MSE, MS_SSIM, Charbonnier # Verdadeira etapa de realce
-            msssim_weight, charbonnier_weight,col_loss_weight = 1.0, 0.0028, 0.61
+            msssim_weight, charbonnier_weight,col_loss_weight = 0.02, 1.0, 1.0
+
+
+            perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
+            loss += perceptual_dino
+
+            msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
+            loss += msssim
 
             col_loss = self.color_loss(y_0_pred, gt_images) * col_loss_weight
             loss += col_loss
@@ -133,9 +174,9 @@ class GaussianDiffusionTrainer(nn.Module):
             msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
             loss += msssim
 
-        #    return loss, mse_loss, msssim, charbonnier, col_loss
+        #return [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss]
+        return [loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss]
 
-        return [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss]
 
 
 class GaussianDiffusionSampler(nn.Module):##terei que ajustar o diffusion sampler

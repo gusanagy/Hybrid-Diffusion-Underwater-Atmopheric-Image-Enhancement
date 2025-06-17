@@ -12,10 +12,10 @@ def main(model_config = None):
         "supervised": True,
         "underwater_dataset_name": "UIEB",
         "atmospheric_dataset_name": "HDR+",
-        "epoch": 1000,
+        "epoch": 2000,
         #"batch_size": 16,
         "T": 1000,
-        "channel": 64,
+        "channel": 128,
         "channel_mult": [1, 2, 2, 2],
         "attn": [2],
         "num_res_blocks": 2,
@@ -47,14 +47,15 @@ def main(model_config = None):
     parser.add_argument('--inference_image', type=str, default="")  #or eval
     parser.add_argument('--output_path', type=str, default="./output/")  #or eval
     parser.add_argument('--wandb', type=bool, default=False)  #or False
-    parser.add_argument('--wandb_name', type=str, default="HybridDffusion_2")
+    parser.add_argument('--wandb_name', type=str, default="HybridDffusion_3")
     parser.add_argument('--epoch', type=int, default=int(1000))
     parser.add_argument('--batch_size', type=int, default=int(16))
     parser.add_argument('--DDP', type=bool, default=False)
     parser.add_argument('--stage', type=int, default=int(0))#etapa 1 e 2 paras aprendizado de caracteristicas 3 para realce de imagem
-    parser.add_argument('--epochs_stage_3', type=int, default=int(200))
-    parser.add_argument('--epochs_stage_1', type=int, default=int(400))
-    parser.add_argument('--epochs_stage_2', type=int, default=int(400))
+    parser.add_argument('--epochs_stage_3', type=int, default=int(1000))
+    parser.add_argument('--epochs_stage_1', type=int, default=int(1000))
+    parser.add_argument('--epochs_stage_2', type=int, default=int(1000))
+    parser.add_argument('--device', type=str, default=str("cuda"))
     #parser.add_argument('--DDP', type=bool, default=)
 
 

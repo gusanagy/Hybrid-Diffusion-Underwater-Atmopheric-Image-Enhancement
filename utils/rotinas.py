@@ -39,6 +39,9 @@ from torchvision.transforms.functional import rgb_to_grayscale
 from metrics.metrics import *
 #from itertools import cycle
 
+####################
+### Old Functions###
+####################
 
 # def train_old(config: Dict):
 #     if config.DDP==True:
@@ -433,7 +436,7 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     # Calcular perdas usando a função de treinamento
     #o dato esta sendo carregado dependendo do stage entao nem sempre todoas as loss tem resultado calculado logo nao da pra logar todas desta maneira
     
-    [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss] = trainer(input, label, stage)
+    [loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss] = trainer(input, label, stage)
 
 
     # Backpropagation e atualização dos parâmetros
@@ -442,10 +445,48 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     optimizer.step()
 
     
-    return loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss
+    return loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss
 
 
-def log_metrics(wandb_, e, loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, optimizer, tqdmDataLoader, num, stage):
+def log_metrics(wandb_, e, loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss, optimizer, tqdmDataLoader, num, stage):
+    """
+    Registra métricas no TQDM e no WandB, lidando com exceções ao calcular as métricas.
+    """
+    metrics = {
+        "loss": None,
+        "mse_loss": None,
+        "Perceptual_dino": None,
+        "MS_SSIM": None,
+        "Charbonnier": None,
+        "ang_color_loss": None
+    }
+
+    # Processar cada métrica com try-except
+    for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss]):
+        try:
+            metrics[key] = value.mean().item()
+        except Exception as ex:
+            #print(f"Warning: Failed to process {key}: {ex}")
+            pass
+
+    # Atualizar tqdmDataLoader
+    tqdmDataLoader.set_postfix(ordered_dict={
+        "epoch": e,
+        **{k: (v if v is not None else "Error") for k, v in metrics.items()},
+        "LR": optimizer.state_dict()['param_groups'][0]["lr"],
+        "num": num + 1
+    })
+
+    # Registrar no wandb
+    if wandb_:
+        wandb.log({f"Train {stage}": {
+            "epoch": e,
+            **{k: v for k, v in metrics.items() if v is not None},
+            "LR": optimizer.state_dict()['param_groups'][0]["lr"],
+            "num": num + 1
+        }})
+
+def log_metrics_old(wandb_, e, loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, optimizer, tqdmDataLoader, num, stage):
     """
     Registra métricas no TQDM e no WandB, lidando com exceções ao calcular as métricas.
     """
@@ -503,12 +544,12 @@ def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, c
                     input, label = next(iterator)  # Obter o próximo batch
                     #print("input shape: ",input.shape,"label shape: ",label.shape)
                     # Processar batch #modificar as saidas para o novo modelo
-                    loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss = process_batch(
+                    loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss = process_batch(
                         input, label, device, trainer, optimizer, net_model, config, e, stage
                     )
 
                     # Logar métricas
-                    log_metrics(config.wandb, e, loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, optimizer, tqdmDataLoader, num, stage)
+                    log_metrics(config.wandb, e, loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss, optimizer, tqdmDataLoader, num, stage)
 
                     num += 1
                     tqdmDataLoader.update(1)
@@ -532,11 +573,6 @@ def save_checkpoint(net_model, ckpt_savedir, e, config, stage, dataset_name):
         torch.save(net_model.state_dict(), checkpoint_path)
 
 
-def Test(config: Dict,epoch):
-
-    pass
-def Inference(config: Dict,epoch):
-    pass
 # Treinamento principal
 def train(config: Dict):
     if config.DDP:
@@ -591,10 +627,15 @@ def train(config: Dict):
     ######################################
     ### Definir estágios do treinamento###
     ######################################
+    # stages_old = [
+    #     {"name": "Pre-Training_DINO+MS_SSIM", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
+    #     {"name": "Pre-Training_VGG+Charbonnier", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)},
+    #     {"name": "Enhancement_Training_(Charbonnier+Angular_Color_Loss+MS_SSIM)", "lr": config.lr * 0.1, "epochs": config.epochs_stage_3, "number" : int(2)}
+    # ]
+    # Aprendizado em dois passos usando gerenciamento do scheduller
     stages = [
-        {"name": "Pre-Training_DINO+MS_SSIM", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
-        {"name": "Pre-Training_VGG+Charbonnier", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)},
-        {"name": "Enhancement_Training_(Charbonnier+Angular_Color_Loss+MS_SSIM)", "lr": config.lr * 0.1, "epochs": config.epochs_stage_3, "number" : int(2)}
+        {"name": "Pre-Training", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
+        {"name": "Enhancement", "lr": config.lr * 0.1, "epochs": config.epochs_stage_3, "number" : int(1)}
     ]
 
     ################################
@@ -729,7 +770,7 @@ def train_last(config: Dict):
             warmUpScheduler.step()
 
             # Salvar checkpoints a cada 200 épocas globais
-            if current_epoch % 200 == 0:
+            if current_epoch % 00 == 0:
                 save_checkpoint(net_model, ckpt_savedir, current_epoch, config, stage = stage["name"],dataset_name=config.underwater_data_name+config.atmospheric_data_name)
 
         total_epochs += stage["epochs"]
@@ -1186,8 +1227,8 @@ def val(config: Dict,epoch):
     dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
     dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
 
-    device = config.device_list[0]  # Usando o primeiro dispositivo disponível
-    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Usando o primeiro dispositivo disponível
+    #device = "cpu"
     #####################################################
     ### Inicialização do modelo, otimizador e trainer ###
     #####################################################
@@ -1292,14 +1333,15 @@ def val(config: Dict,epoch):
                         # """)
 
                 #AVERAGE SSIM PSNR UICM UCIQE
-                avg_psnr = sum(psnr_list) / len(psnr_list)
-                avg_ssim = sum(ssim_list) / len(ssim_list)
-                avg_uiqm = sum(uiqm_list) / len(uiqm_list)
-                avg_uciqe = sum(uciqe_list) / len(uciqe_list)       
-                avg_uism = sum(uism_list) / len(uism_list)    
-                avg_uicm = sum(uicm_list) / len(uicm_list)
-                avg_fid = sum(fid_list) / len(fid_list)
-                avg_uiconm = sum(uiconm_list) / len(uiconm_list)
+                print(len(psnr_list),len(ssim_list),len(uiqm_list),len(uciqe_list),len(uism_list),len(uicm_list),len(uiconm_list),len(fid_list))
+                avg_psnr = (sum(psnr_list) + 1 )/ (len(psnr_list) +1)
+                avg_ssim = (sum(ssim_list) +1)/ (len(ssim_list) +1 )
+                avg_uiqm = (sum(uiqm_list) +1)/ (len(uiqm_list) +1 )
+                avg_uciqe = (sum(uciqe_list) +1)/ (len(uciqe_list) +1 )      
+                avg_uism = (sum(uism_list) +1)/ (len(uism_list) +1 )
+                avg_uicm = (sum(uicm_list) +1 )/ (len(uicm_list) +1 )
+                avg_fid = (sum(fid_list) +1 )/ (len(fid_list) +1 )
+                avg_uiconm = (sum(uiconm_list) +1 )/ (len(uiconm_list) +1 )
                         
                 f = open(save_txt_name_u, 'w+')
 
@@ -1372,7 +1414,7 @@ def val(config: Dict,epoch):
                         uism_list.append(uism)
                         uicm_list.append(uicm)
                         uiconm_list.append(uiconm)
-                        #cv2.imwrite(save_dir_a+name[i],res_Imgs)
+                        cv2.imwrite(save_dir_a+name[i],res_Imgs)
                         
                         # print(f"""
                         #       uiqm0 : {uiqm0},  
@@ -1390,14 +1432,14 @@ def val(config: Dict,epoch):
                         
                     
                 #AVERAGE SSIM PSNR UICM UCIQE
-                avg_psnr = sum(psnr_list) / len(psnr_list)
-                avg_ssim = sum(ssim_list) / len(ssim_list)
-                avg_uiqm = sum(uiqm_list) / len(uiqm_list)
-                avg_uciqe = sum(uciqe_list) / len(uciqe_list)       
-                avg_uism = sum(uism_list) / len(uism_list)    
-                avg_uicm = sum(uicm_list) / len(uicm_list)
-                avg_fid = sum(fid_list) / len(fid_list)
-                avg_uiconm = sum(uiconm_list) / len(uiconm_list)
+                avg_psnr = (sum(psnr_list) + 1 )/ (len(psnr_list) +1)
+                avg_ssim = (sum(ssim_list) +1)/ (len(ssim_list) +1 )
+                avg_uiqm = (sum(uiqm_list) +1)/ (len(uiqm_list) +1 )
+                avg_uciqe = (sum(uciqe_list) +1)/ (len(uciqe_list) +1 )      
+                avg_uism = (sum(uism_list) +1)/ (len(uism_list) +1 )
+                avg_uicm = (sum(uicm_list) +1 )/ (len(uicm_list) +1 )
+                avg_fid = (sum(fid_list) +1 )/ (len(fid_list) +1 )
+                avg_uiconm = (sum(uiconm_list) +1 )/ (len(uiconm_list) +1 )
                         
                 f = open(save_txt_name_a, 'w+')
 
