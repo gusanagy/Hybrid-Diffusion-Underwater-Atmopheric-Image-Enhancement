@@ -8,3 +8,6 @@ diffusion/__pycache__/Diffusion.cpython-311.pyc
 utils/__pycache__/rotinas.cpython-311.pyc
 diffusion/__pycache__/Diffusion.cpython-311.pyc
 utils/__pycache__/rotinas.cpython-311.pyc
+__pycache__/
+utils/__pycache__/*
+diffusion/__pycache__/*

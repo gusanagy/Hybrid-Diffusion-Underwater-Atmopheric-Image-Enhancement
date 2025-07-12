@@ -639,8 +639,9 @@ def train(config: Dict):
     ]
 
     ################################
-    #### Início do treinamento ####
+    #### Início do treinamento #####
     ################################
+
     total_epochs = 0
     num = 0
     dataloaders = [dataloader_u, dataloader_a]

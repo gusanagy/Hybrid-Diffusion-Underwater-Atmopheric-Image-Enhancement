@@ -76,7 +76,7 @@ def split_data(data_list, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2, shuffl
 
 
 
-# nao sera usado
+# nao sera usado para o sibgrapi
 def load_EUVP_paths(dataset_path = "data/EUVP",split=False): #errado Arrumar, usar apenas as imagens do treino A 
      # Inicializa as listas para os caminhos das imagens
     train_img = []
@@ -96,7 +96,7 @@ def load_EUVP_paths(dataset_path = "data/EUVP",split=False): #errado Arrumar, us
   
 
     return split_data(trainA_pattern)
-
+# nao sera usado para o sibgrapi
 def load_HDR_paths(dataset_path="data/HDR+ Burst_20171106_subset", task="train", split=False):
     """
     Carrega os caminhos das imagens do dataset HDR+.
@@ -133,30 +133,35 @@ def load_HDR_paths_annt(dataset_path="data/HDR+ Burst_20171106_subset", task="tr
     imgs.extend(glob.glob(os.path.join(dataset_path, "results_20161014","*", "*.jpg")))
 
     return split_data(imgs)
-
+#sera usado para o sibgrapi - 1
 def load_HICRD_paths(dataset_path = "data/HICRD", task="train",split=False):
     train_img = []
-    #test_img = []
+    test_img = []
     
     train_img.extend(glob.glob(os.path.join(dataset_path, "trainA_paired", "*.png")))
-    #test_img.extend(glob.glob(os.path.join(dataset_path, "trainB_paired", "*.png")))
+    test_img.extend(glob.glob(os.path.join(dataset_path, "testA", "*.png")))
 
     #print(f"Total de imagens encontradas: {len(train_img) , len(test_img)}")
 
-    return split_data(train_img)
+    if task == "train":
+        return train_img
+    elif task == "test":
+        return test_img
 
 def load_HICRD_paths_annt(dataset_path = "data/HICRD", task="train",split=False):
     train_img = []
-    #test_img = []
+    test_img = []
     
     train_img.extend(glob.glob(os.path.join(dataset_path, "trainB_paired", "*.png")))
-    #test_img.extend(glob.glob(os.path.join(dataset_path, "trainB_paired", "*.png")))
+    test_img.extend(glob.glob(os.path.join(dataset_path, "testB", "*.png")))
+    
+    if task == "train":
+        return train_img
+    elif task == "test":
+        return test_img
 
-    #print(f"Total de imagens encontradas: {len(train_img) , len(test_img)}")
 
-    return split_data(train_img)
-
-
+#sera usado para o sibgrapi - 2
 def load_LSUI_paths(dataset_path = "data/LSUI", task="train",split=False):
     train_img = []
     #test_img = []
@@ -164,6 +169,7 @@ def load_LSUI_paths(dataset_path = "data/LSUI", task="train",split=False):
     train_img.extend(glob.glob(os.path.join(dataset_path, "input", "*.jpg")))
 
     return split_data(train_img)
+
 def load_LSUI_paths_annt(dataset_path = "data/LSUI", task="train",split=False):
     train_img = []
     #test_img = []
@@ -171,7 +177,7 @@ def load_LSUI_paths_annt(dataset_path = "data/LSUI", task="train",split=False):
     train_img.extend(glob.glob(os.path.join(dataset_path, "GT", "*.jpg")))
 
     return split_data(train_img)
-
+#sera usado para o sibgrapi
 def load_TM_DIED_paths(dataset_path = "data/TM-DIED", task="train",split=False):
     train_img = []
     #test_img = []
@@ -180,7 +186,7 @@ def load_TM_DIED_paths(dataset_path = "data/TM-DIED", task="train",split=False):
 
     return split_data(train_img)
 
-
+#sera usado para o sibgrapi - 3
 def load_UIEB_paths(dataset_path = "data/UIEB", task="train",split=False):
     train_img = []
     #test_img = []
@@ -188,7 +194,7 @@ def load_UIEB_paths(dataset_path = "data/UIEB", task="train",split=False):
     train_img.extend(glob.glob(os.path.join(dataset_path,"train", "*.png")))
 
     return split_data(train_img)
-
+#nao sera usado para o sibgrapi
 def load_RUIE_paths(dataset_path = "data/RUIE", task="train",split=False):
     train_img = []
     #test_img = []
@@ -201,6 +207,46 @@ def load_RUIE_paths_annt(dataset_path = "data/RUIE", task="val",split=False):
     #test_img = []
     
     train_img.extend(glob.glob(os.path.join(dataset_path,"*","train", "*.jpg")))
+
+    return split_data(train_img)
+#sera usado para o sibgrapi - 4
+def load_LoLI_paths(dataset_path = "data/LoLI", task="Train",split=False):
+    """
+    Carrega os caminhos das imagens do dataset LoLI.
+
+    Parâmetros:
+        dataset_path (str): Caminho base para o dataset LoLI.
+        task (str): Tarefa a ser executada (não utilizada diretamente neste código).
+        split (bool): Indica se o split de treino/validação deve ser retornado.
+
+    Retorna:
+        tuple: Listas com caminhos para treino, teste e validação.
+    """
+    train_img = []
+    #test_img = []
+    
+    train_img.extend(glob.glob(os.path.join(dataset_path, task, "*.jpg")))
+    #test_img.extend(glob.glob(os.path.join(dataset_path, "test", "*.jpg")))
+
+    return split_data(train_img)
+
+def load_LoLI_paths_annt(dataset_path = "data/LoLI", task="Train",split=False): 
+    """
+    Carrega os caminhos das imagens anotadas do dataset LoLI.
+
+    Parâmetros:
+        dataset_path (str): Caminho base para o dataset LoLI.
+        task (str): Tarefa a ser executada (não utilizada diretamente neste código).
+        split (bool): Indica se o split de treino/validação deve ser retornado.
+
+    Retorna:
+        tuple: Listas com caminhos para treino, teste e validação.
+    """
+    train_img = []
+    #test_img = []
+    
+    train_img.extend(glob.glob(os.path.join(dataset_path, task, "*.png")))
+    #test_img.extend(glob.glob(os.path.join(dataset_path, "test", "*.png")))
 
     return split_data(train_img)
 
@@ -231,7 +277,7 @@ class Atmospheric_Dataset(data.Dataset):
     def __init__(self, atmospheric_dataset_name: str, batch_size:int = 8, transforms=None, task: str = "train", supervised: bool = True):
         self.dataset_name = atmospheric_dataset_name
         self.batch_size = batch_size
-        self.task =task
+        self.task = task
         self.supervised = supervised
 
         # Define transformations
@@ -257,6 +303,9 @@ class Atmospheric_Dataset(data.Dataset):
         elif self.dataset_name == "TM-DIED":# nao tem dados anotados logo serao usados os mesmos dados de entrada para treino e teste
             self.train_img_a, self.test_img_a, self.val_img_a = load_TM_DIED_paths()
             self.train_img_b, self.test_img_b, self.val_img_b = load_TM_DIED_paths()
+        elif self.dataset_name == "LoLI":
+            self.train_img_a, self.test_img_a, self.val_img_a = load_LoLI_paths()
+            self.train_img_b, self.test_img_b, self.val_img_b = load_LoLI_paths_annt()
         else:
             raise ValueError(
                 f"Dataset {self.dataset_name} not found. Choose between 'EUVP', 'HDR+', 'HICRD', 'LSUI', 'TM-DIED', 'UIEB' or 'RUIE'")
