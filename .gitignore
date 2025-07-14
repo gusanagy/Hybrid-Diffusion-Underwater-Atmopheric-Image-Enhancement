@@ -11,3 +11,9 @@ utils/__pycache__/rotinas.cpython-311.pyc
 __pycache__/
 utils/__pycache__/*
 diffusion/__pycache__/*
+# Ignora todos os arquivos compilados do Python
+*.pyc
+__pycache__/
+# Ignora todos os arquivos compilados do Python
+*.pyc
+__pycache__/
