@@ -43,7 +43,7 @@ class GaussianDiffusionTrainer(nn.Module):
         self.stage = 0
 
         ### Funções de perda para O aprendizado das caracteristicas da imagem
-        self.loss_perceptual_vgg = PerceptualLoss_vgg(model=perceptual_vgg)#Aprendizado em nivel de pixel
+        #self.loss_perceptual_vgg = PerceptualLoss_vgg(model=perceptual_vgg)#Aprendizado em nivel de pixel
         self.loss_perceptual_dino = PerceptualLoss_dino(model=perceptual_dino).to("cuda")#aprendizado global
 
         ### Funções para o Realce de imagens 
@@ -53,7 +53,7 @@ class GaussianDiffusionTrainer(nn.Module):
 
     def forward(self, gt_images, input_image, stage):
         self.stage = stage
-        input_image = input_image.float()/255.0
+        input_image = (input_image.float()/255.0)*2-1
         gt_images = (gt_images.float()/255.0)*2-1
         """
         Algorithm 1.
@@ -137,45 +137,45 @@ class GaussianDiffusionTrainer(nn.Module):
         #return [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss]
 
         # Etapas 0  Aprendizado de caracteristicas Etapa 2 Realce de Imagem
-        if self.stage == 0:
-            #MSE, Perceptual DINO, MS_SSIM 
-            dino_weight, msssim_weight, charbonnier_weight = 0.03, 0.03, 1.0  #definir pesos ao checar as escalar das funcoes de perda
+        #if self.stage == 0:
+        #    #MSE, Perceptual DINO, MS_SSIM 
+        #    dino_weight, msssim_weight, charbonnier_weight = 0.03, 0.03, 1.0  #definir pesos ao checar as escalar das funcoes de perda
 
-            perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
-            loss += perceptual_dino
+        #    perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
+        #    loss += perceptual_dino
 
-            msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
-            loss += msssim
+        #    msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
+        #    loss += msssim
 
-            charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
-            loss += charbonnier
-
-
-        elif self.stage == 1:
-            #MSE, Perceptual DINO, MS_SSIM 
-            dino_weight, msssim_weight = 0.03, 0.03 #definir pesos ao checar as escalar das funcoes de perda
-
-            #MSE, MS_SSIM, Charbonnier # Verdadeira etapa de realce
-            msssim_weight, charbonnier_weight,col_loss_weight = 0.02, 1.0, 1.0
+        #    charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
+        #    loss += charbonnier
 
 
-            perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
-            loss += perceptual_dino
+        #elif self.stage == 1:
+        #MSE, Perceptual DINO, MS_SSIM 
+        #dino_weight, msssim_weight = 0.03, 0.03 #definir pesos ao checar as escalar das funcoes de perda
 
-            msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
-            loss += msssim
+        #MSE, MS_SSIM, Charbonnier # Verdadeira etapa de realce
+        dino_weight, msssim_weight,col_loss_weight = 0.5, 0.0045, 1.0
 
-            col_loss = self.color_loss(y_0_pred, gt_images) * col_loss_weight
-            loss += col_loss
 
-            charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
-            loss += charbonnier
+        perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
+        loss += perceptual_dino
 
-            msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
-            loss += msssim
+        msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
+        loss += msssim
+
+        col_loss = self.color_loss(y_0_pred, gt_images) * col_loss_weight
+        loss += col_loss
+
+        #charbonnier = self.charbonnier_loss(y_0_pred, gt_images) * charbonnier_weight
+        #loss += charbonnier
+
+        #msssim = self.ms_ssim_loss(y_0_pred, gt_images) * msssim_weight
+        #loss += msssim
 
         #return [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss]
-        return [loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss]
+        return [loss, mse_loss, perceptual_dino, msssim, col_loss]
 
 
 

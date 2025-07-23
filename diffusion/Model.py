@@ -425,9 +425,9 @@ class DynamicUNet(nn.Module):
     def create_middleblocks(self, now_ch, tdim, dropout):
         return nn.ModuleList([
             ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
-            ResBlock(now_ch, now_ch, tdim, dropout, attn=False),
             ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
-            ResBlock(now_ch, now_ch, tdim, dropout, attn=False)
+            ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
+            ResBlock(now_ch, now_ch, tdim, dropout, attn=True)
         ])
 
     def create_upblocks(self, ch, ch_mult, num_res_blocks, tdim, dropout):

@@ -1,7 +1,6 @@
 
 import os
 from typing import Dict
-
 import torch
 import torch.optim as optim
 from tqdm import tqdm
@@ -9,9 +8,8 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
 from torchvision.utils import save_image
-
 from Diffusion import GaussianDiffusionSampler, GaussianDiffusionTrainer
-from Diffusion.Model import UNet
+from diffusion.Model import UNet
 from Scheduler import GradualWarmupScheduler
 
 

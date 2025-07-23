@@ -17,3 +17,5 @@ __pycache__/
 # Ignora todos os arquivos compilados do Python
 *.pyc
 __pycache__/
+wandb_token.txt
+wandb/*

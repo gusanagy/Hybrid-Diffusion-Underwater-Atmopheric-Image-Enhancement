@@ -1,8 +1,8 @@
+import os
 import wandb
-from utils.rotinas import *
+from utils.rotinas import train, test, inference
 import argparse
 import pprint
-
 
 def main(model_config = None):
     ## Mudar parametros para o modelo que irei usar. Utilizar parse para carregar o m etodo. Ajustar Wandb para uso e plot dos reultados 
@@ -10,9 +10,9 @@ def main(model_config = None):
         "DDP": False,
         #"state": "train", # or eval
         "supervised": True,
-        "underwater_dataset_name": "UIEB",
-        "atmospheric_dataset_name": "HDR+",
-        "epoch": 2000,
+        #"underwater_dataset_name": "UIEB",
+        #"atmospheric_dataset_name": "HDR+",
+        #"epoch": 2000,
         #"batch_size": 16,
         "T": 1000,
         "channel": 128,
@@ -26,8 +26,8 @@ def main(model_config = None):
         "beta_T": 0.02,
         "img_size": 32,
         "grad_clip": 1.,
-        "device": "cuda", #MODIFIQUEI
-        "device_list": [0, 1],#[0, 1]
+        "device": "cuda:0", #MODIFIQUEI
+        "device_list": [0],#[0, 1]
         #"device_list": [3,2,1,0],
         
         "ddim":True,
@@ -39,31 +39,49 @@ def main(model_config = None):
     ##Adicionar ao arg parse o transfer learning manual 
     parser = argparse.ArgumentParser(description="Pipeline de Treinamento/Inferência do modelo Hybrid Diffusion")
     parser.add_argument('--underwater_data_name', type=str, default="HICRD")
-    parser.add_argument('--atmospheric_data_name', type=str, default="TM-DIED")
+    parser.add_argument('--atmospheric_data_name', type=str, default="LoLI")
     parser.add_argument('--model', type=str, default="standart")
-    parser.add_argument('--dataset_path', type=str, default="./data/")
+    parser.add_argument('--dataset_path', type=str, default="./data/")#mudar
     parser.add_argument('--state', type=str, default="train")  #or eval
     parser.add_argument('--pretrained_path', type=str, default=None)  #or eval output/ckpt/ckpt_1000_final_UIEBTM-DIED.pt
     parser.add_argument('--inference_image', type=str, default="")  #or eval
     parser.add_argument('--output_path', type=str, default="./output/")  #or eval
-    parser.add_argument('--wandb', type=bool, default=False)  #or False
-    parser.add_argument('--wandb_name', type=str, default="HybridDffusion_3")
-    parser.add_argument('--epoch', type=int, default=int(1000))
+    parser.add_argument('--wandb', action='store_true', help='Actavete Wandb for logging and visualization')  
+    parser.add_argument('--wandb_name', type=str, default="HybridDffusion_4_ICAR")  #or eval
+    parser.add_argument('--epoch', type=int, default=int(2000))
     parser.add_argument('--batch_size', type=int, default=int(16))
-    parser.add_argument('--DDP', type=bool, default=False)
+    parser.add_argument('--DDP', action='store_true', help="Use Distributed Data Parallel (DDP) for training")
     parser.add_argument('--stage', type=int, default=int(0))#etapa 1 e 2 paras aprendizado de caracteristicas 3 para realce de imagem
-    parser.add_argument('--epochs_stage_3', type=int, default=int(1000))
     parser.add_argument('--epochs_stage_1', type=int, default=int(1000))
     parser.add_argument('--epochs_stage_2', type=int, default=int(1000))
     parser.add_argument('--device', type=str, default=str("cuda"))
     #parser.add_argument('--DDP', type=bool, default=)
 
-
-    #adicionar mais argumentos para o wandb
-
     config = parser.parse_args()
     
+    # ================================
+    # 4. Aplicar valores de modelConfig
+    # ================================
+    for key, value in modelConfig.items():
+        # Só aplica se não estiver nos args (ex: não sobrescreve se foi passado via linha de comando)
+        if not hasattr(config, key):
+            setattr(config, key, value)
+
+    
+    
+    # ================================
+    # 6. Exibir os parâmetros finais
+    # ================================
+    print("\n🔧 Configurações Finais:")
+    pprint.pprint(vars(config))
+
     if config.wandb:
+        # Verifica se o arquivo de token do wandb existe
+        with open('wandb_token.txt', 'r') as f:
+            token = f.read().strip()
+
+        # Define o token como variável de ambiente
+        os.environ['WANDB_API_KEY'] = token
         wandb.init(
                 project=config.wandb_name,
                 config=vars(config),
@@ -73,25 +91,22 @@ def main(model_config = None):
                 job_type="train"
 
             ) 
-    
-    for key, value in modelConfig.items():
-        setattr(config, key, value)
-    
-    pprint.pprint(config)
 
-    print(config.epoch)
 
+    ##################################################
+    ### Treinamento, Teste, Avaliação e Inferência ###
+    ##################################################
     if config.state == 'eval':
         print("Avaliando modelo")
-        val(config, config.epoch)
+        inference(config, config.epoch)
     elif config.state == 'train':
         print("Treinando modelo")
         train(config)
     elif config.state == 'inference':
         print("Inferindo modelo")
-        Inference(config,config.epoch)
+        test(config,config.epoch)
     else:
-        print("Invalid state")
+        print("Invalid state/nPlease use 'train', 'eval' or 'inference'.")
     #train(config)#importar a funcao ou classe de papeline de treinamento== treino/teste e carregar as configs e rodar
     #Testi(config, 1000)
     #python main.py --dataset "RUIE" --state "test" --epoch 500

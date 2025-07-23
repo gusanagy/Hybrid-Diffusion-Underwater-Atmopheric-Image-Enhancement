@@ -419,7 +419,7 @@ from metrics.metrics import *
 #                 #     "Image Ajuste ":wout
 #                 #     }})
 
-                
+
 ########################################
 ### Novas funcoes para o treinamento ###
 ########################################
@@ -436,7 +436,7 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     # Calcular perdas usando a função de treinamento
     #o dato esta sendo carregado dependendo do stage entao nem sempre todoas as loss tem resultado calculado logo nao da pra logar todas desta maneira
     
-    [loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss] = trainer(input, label, stage)
+    [loss, mse_loss, perceptual_dino, msssim, col_loss] = trainer(input, label, stage)
 
 
     # Backpropagation e atualização dos parâmetros
@@ -445,10 +445,9 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     optimizer.step()
 
     
-    return loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss
+    return loss, mse_loss, perceptual_dino, msssim, col_loss
 
-
-def log_metrics(wandb_, e, loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss, optimizer, tqdmDataLoader, num, stage):
+def log_metrics(wandb_, e, loss, mse_loss, perceptual_dino, msssim, col_loss, optimizer, tqdmDataLoader, num, stage, task):
     """
     Registra métricas no TQDM e no WandB, lidando com exceções ao calcular as métricas.
     """
@@ -462,13 +461,13 @@ def log_metrics(wandb_, e, loss, mse_loss, perceptual_dino, msssim, charbonnier,
     }
 
     # Processar cada métrica com try-except
-    for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss]):
+    for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, msssim, col_loss]):
         try:
             metrics[key] = value.mean().item()
         except Exception as ex:
             #print(f"Warning: Failed to process {key}: {ex}")
             pass
-
+    
     # Atualizar tqdmDataLoader
     tqdmDataLoader.set_postfix(ordered_dict={
         "epoch": e,
@@ -479,52 +478,12 @@ def log_metrics(wandb_, e, loss, mse_loss, perceptual_dino, msssim, charbonnier,
 
     # Registrar no wandb
     if wandb_:
-        wandb.log({f"Train {stage}": {
+        wandb.log({f"{task} {stage}": {
             "epoch": e,
             **{k: v for k, v in metrics.items() if v is not None},
             "LR": optimizer.state_dict()['param_groups'][0]["lr"],
             "num": num + 1
         }})
-
-def log_metrics_old(wandb_, e, loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, optimizer, tqdmDataLoader, num, stage):
-    """
-    Registra métricas no TQDM e no WandB, lidando com exceções ao calcular as métricas.
-    """
-    metrics = {
-        "loss": None,
-        "mse_loss": None,
-        "Perceptual_dino": None,
-        "Perceptual_vgg": None,
-        "MS_SSIM": None,
-        "Charbonnier": None,
-        "ang_color_loss": None
-    }
-
-    # Processar cada métrica com try-except
-    for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, perceptual_vgg, msssim, charbonnier, col_loss]):
-        try:
-            metrics[key] = value.mean().item()
-        except Exception as ex:
-            #print(f"Warning: Failed to process {key}: {ex}")
-            pass
-
-    # Atualizar tqdmDataLoader
-    tqdmDataLoader.set_postfix(ordered_dict={
-        "epoch": e,
-        **{k: (v if v is not None else "Error") for k, v in metrics.items()},
-        "LR": optimizer.state_dict()['param_groups'][0]["lr"],
-        "num": num + 1
-    })
-
-    # Registrar no wandb
-    if wandb_:
-        wandb.log({f"Train {stage}": {
-            "epoch": e,
-            **{k: v for k, v in metrics.items() if v is not None},
-            "LR": optimizer.state_dict()['param_groups'][0]["lr"],
-            "num": num + 1
-        }})
-
 
 def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, e, num, stage):
     """
@@ -544,12 +503,12 @@ def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, c
                     input, label = next(iterator)  # Obter o próximo batch
                     #print("input shape: ",input.shape,"label shape: ",label.shape)
                     # Processar batch #modificar as saidas para o novo modelo
-                    loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss = process_batch(
+                    loss, mse_loss, perceptual_dino, msssim, col_loss = process_batch(
                         input, label, device, trainer, optimizer, net_model, config, e, stage
                     )
 
                     # Logar métricas
-                    log_metrics(config.wandb, e, loss, mse_loss, perceptual_dino, msssim, charbonnier, col_loss, optimizer, tqdmDataLoader, num, stage)
+                    log_metrics(config.wandb, e, loss, mse_loss, perceptual_dino, msssim, col_loss, optimizer, tqdmDataLoader, num, stage, task="Train")
 
                     num += 1
                     tqdmDataLoader.update(1)
@@ -560,6 +519,39 @@ def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, c
 
     return num
 
+def test_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, e, num, stage):
+    """
+    Treina o modelo alternando entre DataLoaders até que ambos sejam completamente percorridos.
+    """
+    # Criar iteradores para os DataLoaders
+    iterators = [iter(dataloader) for dataloader in dataloaders]
+    active_loaders = [True] * len(dataloaders)  # Marca quais DataLoaders ainda têm batches
+
+    with tqdm(total=sum(len(dataloader) for dataloader in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
+        while any(active_loaders):  # Continua enquanto houver loaders ativos
+            for i, iterator in enumerate(iterators):
+                if not active_loaders[i]:
+                    continue  # Pule se o DataLoader já foi completamente percorrido
+
+                try:
+                    input, label = next(iterator)  # Obter o próximo batch
+                    #print("input shape: ",input.shape,"label shape: ",label.shape)
+                    # Processar batch #modificar as saidas para o novo modelo
+                    loss, mse_loss, perceptual_dino, msssim, col_loss = process_batch(
+                        input, label, device, trainer, optimizer, net_model, config, e, stage
+                    )
+
+                    # Logar métricas
+                    log_metrics(config.wandb, e, loss, mse_loss, perceptual_dino, msssim, col_loss, optimizer, tqdmDataLoader, num, stage, task="Test")
+
+                    num += 1
+                    tqdmDataLoader.update(1)
+
+                except StopIteration:
+                    # Marcar o DataLoader como concluído
+                    active_loaders[i] = False
+
+    #return num
 
 def save_checkpoint(net_model, ckpt_savedir, e, config, stage, dataset_name):
     """
@@ -573,6 +565,9 @@ def save_checkpoint(net_model, ckpt_savedir, e, config, stage, dataset_name):
         torch.save(net_model.state_dict(), checkpoint_path)
 
 
+################################
+### Treinamento principal ######
+################################
 # Treinamento principal
 def train(config: Dict):
     if config.DDP:
@@ -581,25 +576,34 @@ def train(config: Dict):
         torch.cuda.set_device(local_rank)
         dist.init_process_group(backend='nccl')
         device = torch.device("cuda", local_rank)
-    else:
-        device = config.device_list[0]
+    
 
     #######################################################
     #### Inicialização dos dados para a rotina de treino ###
     #######################################################
-    underwater_data = Underwater_Dataset(config.underwater_data_name)
-    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name)
+    underwater_data_train = Underwater_Dataset(config.underwater_data_name,task="train")
+    atmospheric_data_train = Atmospheric_Dataset(config.atmospheric_data_name, task="train")
+    underwater_data_test = Underwater_Dataset(config.underwater_data_name,task="test")
+    atmospheric_data_test = Atmospheric_Dataset(config.atmospheric_data_name, task="test")
 
     if config.DDP:
-        train_sampler_u = torch.utils.data.distributed.DistributedSampler(underwater_data)
-        train_sampler_a = torch.utils.data.distributed.DistributedSampler(atmospheric_data)
-        dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, sampler=train_sampler_u, 
+        train_sampler_u = torch.utils.data.distributed.DistributedSampler(underwater_data_train)
+        train_sampler_a = torch.utils.data.distributed.DistributedSampler(atmospheric_data_train)
+        test_sampler_u = torch.utils.data.distributed.DistributedSampler(underwater_data_test)
+        test_sampler_a = torch.utils.data.distributed.DistributedSampler(atmospheric_data_test)
+        dataloader_u = DataLoader(underwater_data_train, batch_size=config.batch_size, sampler=train_sampler_u, 
                                   num_workers=4, drop_last=True, pin_memory=True)
-        dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, sampler=train_sampler_a, 
+        dataloader_a = DataLoader(atmospheric_data_train, batch_size=config.batch_size, sampler=train_sampler_a, 
+                                  num_workers=4, drop_last=True, pin_memory=True)
+        dataloader_u_test = DataLoader(underwater_data_test, batch_size=config.batch_size, sampler=test_sampler_u, 
+                                  num_workers=4, drop_last=True, pin_memory=True)
+        dataloader_a_test = DataLoader(atmospheric_data_test, batch_size=config.batch_size, sampler=test_sampler_a, 
                                   num_workers=4, drop_last=True, pin_memory=True)
     else:
-        dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-        dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+        dataloader_u = DataLoader(underwater_data_train, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+        dataloader_a = DataLoader(atmospheric_data_train, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+        dataloader_u_test = DataLoader(underwater_data_test, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+        dataloader_a_test = DataLoader(atmospheric_data_test, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
 
     ###################################################
     ### Inicialização do modelo, otimizador e trainer #
@@ -614,7 +618,13 @@ def train(config: Dict):
     if config.DDP:
         net_model = DDP(net_model.cuda(), device_ids=[local_rank], output_device=local_rank)
     else:
-        net_model = torch.nn.DataParallel(net_model, device_ids=config.device_list).to(device)
+        if len(config.device_list) > 1:
+            print("Using DataParallel with devices:", config.device_list)
+            device = torch.device(f"cuda:{config.device_list[0]}")
+            net_model = torch.nn.DataParallel(net_model, device_ids=config.device_list).to(device)
+        else:
+            device=config.device_list[0]
+            net_model.to(device)
 
     trainer = GaussianDiffusionTrainer(net_model, config.beta_1, config.beta_T, config.T).to(device)
 
@@ -634,9 +644,9 @@ def train(config: Dict):
     # ]
     # Aprendizado em dois passos usando gerenciamento do scheduller
     stages = [
-        {"name": "Pre-Training", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
-        {"name": "Enhancement", "lr": config.lr * 0.1, "epochs": config.epochs_stage_3, "number" : int(1)}
-    ]
+        {"name": "Pre-Training Atmosferic", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
+        {"name": "Enhancement Underwater", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)}
+    ]#é mais estável manter o mesmo otimizador e só ajustar o lr e weight_decay se for necessário.
 
     ################################
     #### Início do treinamento #####
@@ -669,120 +679,25 @@ def train(config: Dict):
             # Atualizar scheduler
             warmUpScheduler.step()
 
-            # Salvar checkpoints a cada 200 épocas globais
-            if current_epoch % 200 == 0:
+            # Salvar checkpoints a cada 200 épocas globais 
+            if current_epoch % 200 == 0 or current_epoch == stage["epochs"] - 1:
                 save_checkpoint(net_model, ckpt_savedir, current_epoch, config, stage = stage["name"],dataset_name=config.underwater_data_name+config.atmospheric_data_name)
+
+                 # Logar métricas de teste a cada 10 épocas
+                with torch.no_grad():
+                    # Testar com os DataLoaders de teste
+                    test_with_dataloaders(dataloader_u_test, dataloader_a_test, device, net_model, config, current_epoch, stage=stage["number"])
+                    
 
         total_epochs += stage["epochs"]
     save_checkpoint(net_model, ckpt_savedir, total_epochs, config, stage = "final", dataset_name=config.underwater_data_name+config.atmospheric_data_name)
     print("Training completed.")
-
-
-
-########################################
-# Treinamento principal
-def train_last(config: Dict):
-    if config.DDP:
-        local_rank = int(os.getenv('LOCAL_RANK', -1))
-        print('Local rank:', local_rank)
-        torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend='nccl')
-        device = torch.device("cuda", local_rank)
-    else:
-        device = config.device_list[0]
-
-    #######################################################
-    #### Inicialização dos dados para a rotina de treino ###
-    #######################################################
-    underwater_data = Underwater_Dataset(config.underwater_data_name)
-    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name)
-
-    if config.DDP:
-        train_sampler_u = torch.utils.data.distributed.DistributedSampler(underwater_data)
-        train_sampler_a = torch.utils.data.distributed.DistributedSampler(atmospheric_data)
-        dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, sampler=train_sampler_u, 
-                                  num_workers=4, drop_last=True, pin_memory=True)
-        dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, sampler=train_sampler_a, 
-                                  num_workers=4, drop_last=True, pin_memory=True)
-    else:
-        dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-        dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-
-    ###################################################
-    ### Inicialização do modelo, otimizador e trainer #
-    ###################################################
-    net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
-                            num_res_blocks=config.num_res_blocks, dropout=config.dropout)
-    
-    if config.pretrained_path is not None:
-        ckpt = torch.load(config.pretrained_path, map_location='cpu')
-        net_model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
-
-    if config.DDP:
-        net_model = DDP(net_model.cuda(), device_ids=[local_rank], output_device=local_rank)
-    else:
-        net_model = torch.nn.DataParallel(net_model, device_ids=config.device_list).to(device)
-
-    trainer = GaussianDiffusionTrainer(net_model, config.beta_1, config.beta_T, config.T).to(device)
-
-    log_savedir = os.path.join(config.output_path, 'logs')
-    os.makedirs(log_savedir, exist_ok=True)
-
-    ckpt_savedir = os.path.join(config.output_path, 'ckpt')
-    os.makedirs(ckpt_savedir, exist_ok=True)
-
-    ######################################
-    ### Definir estágios do treinamento###
-    ######################################
-    stages = [
-        #{"name": "Pre-Training DINO+MS SSIM", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
-        #{"name": "Pre-Training VGG+Charbonnier", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)},
-        {"name": "Enhancement_Training_(Charbonnier+Angular_Color_Loss+MS_SSIM)", "lr": config.lr * 0.1, "epochs": config.epochs_stage_3, "number" : int(2)}
-    ]
-
-    ################################
-    #### Início do treinamento ####
-    ################################
-    total_epochs = 0
-    num = 0
-    dataloaders = [dataloader_u, dataloader_a]
-
-    for stage in stages:
-        print(f"Starting stage: {stage['name']} with LR: {stage['lr']} for {stage['epochs']} epochs, Identificador {stage['number']}")
-
-        # Atualizar otimizador e scheduler para o estágio atual
-        optimizer = torch.optim.AdamW(net_model.parameters(), lr=stage["lr"], weight_decay=1e-4)
-        cosineScheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer=optimizer, T_max=stage["epochs"], eta_min=0, last_epoch=-1)
-        warmUpScheduler = GradualWarmupScheduler(
-            optimizer=optimizer, multiplier=config.multiplier, 
-            warm_epoch=stage["epochs"] // 10, after_scheduler=cosineScheduler)
-
-        for e in range(stage["epochs"]):
-            current_epoch = total_epochs + e
-            if config.DDP:
-                for dataloader in dataloaders:
-                    dataloader.sampler.set_epoch(current_epoch)
-
-            # Alternar entre DataLoaders e treinar
-            num = train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, current_epoch, num, stage=stage["number"])                               
-
-            # Atualizar scheduler
-            warmUpScheduler.step()
-
-            # Salvar checkpoints a cada 200 épocas globais
-            if current_epoch % 00 == 0:
-                save_checkpoint(net_model, ckpt_savedir, current_epoch, config, stage = stage["name"],dataset_name=config.underwater_data_name+config.atmospheric_data_name)
-
-        total_epochs += stage["epochs"]
-    save_checkpoint(net_model, ckpt_savedir, total_epochs, config, stage = "final", dataset_name=config.underwater_data_name+config.atmospheric_data_name)
-    print("Training completed.")
-
 
 ##########################
 ### Teste e Inferencia ###
 ##########################
 
+#incompleto
 def process_batch_inference(sampler, input, label, device, net_model, config, stage):
     """
     Processa um batch para inferência: move para o dispositivo, faz a inferência e calcula as métricas.
@@ -816,7 +731,7 @@ def log_metrics_inference(wandb_, loss, mse_loss, perceptual_vgg, perceptual_din
     }
 
     # Processar cada métrica
-    for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, perceptual_vgg, msssim, charbonnier, col_loss]):
+    for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, perceptual_vgg, msssim, col_loss]):
         try:
             metrics[key] = value.mean().item()
         except Exception as ex:
@@ -881,92 +796,8 @@ def save_images(output, input, label, config, stage, num):
     # Converter para imagem (exemplo com matplotlib)
     plt.imsave(os.path.join(config.output_path, f'output_{stage}_{num}.png'), output_image)
     
-def test_new(config: Dict, epoch: int):
-    """
-    Função principal para a execução do teste no modelo.
-    """
-
-    #######################################################
-    #### Inicialização dos dados para a rotina de treino ###
-    #######################################################
-    underwater_data = Underwater_Dataset(config.underwater_data_name)
-    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name)
-
-    dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-    dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-
-    device = config.device_list[0]  # Usando o primeiro dispositivo disponível
-    
-    #####################################################
-    ### Inicialização do modelo, otimizador e trainer ###
-    #####################################################
-    net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
-                            num_res_blocks=config.num_res_blocks, dropout=config.dropout)
-    ckpt = torch.load(config.pretrained_path, map_location='cpu')
-    #ckpt_path = os.path.join(config.output_path, 'ckpt', f'ckpt_{epoch}_final_{config.underwater_data_name+config.atmospheric_data_name}.pt')
-    
-    ckpt = torch.load(config.pretrained_path, map_location='cpu')
-    net_model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
-
-    net_model = net_model.to(device)
-    
-    # Colocar o modelo em modo de avaliação
-    net_model.eval()
-
-    sampler = GaussianDiffusionSampler(
-        net_model, config.beta_1, config.beta_T, config.T).to(device)
-    
-    log_savedir = os.path.join(config.output_path, 'logs')
-    os.makedirs(log_savedir, exist_ok=True)
-
-    ckpt_savedir = os.path.join(config.output_path, 'ckpt')
-    os.makedirs(ckpt_savedir, exist_ok=True)
-
-    
-    # Inicializar datasets e dataloaders
-    underwater_data = Underwater_Dataset(config.underwater_data_name)
-    atmospheric_data = Atmospheric_Dataset(config.atmospheric_data_name)
-    dataloader_u = DataLoader(underwater_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-    dataloader_a = DataLoader(atmospheric_data, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-    
-
-    save_dir_u="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.underwater_data_name+"/"
-    save_dir_a="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.atmospheric_data_name+"/"
-
-    if not os.path.exists(save_dir_u):
-        os.makedirs(save_dir_u)
-    if not os.path.exists(save_dir_a):
-        os.makedirs(save_dir_a)
-
-    print(f"Save dir underwater for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_u}")
-    print(f"Save dir atmospheric for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_a}")
-
-    save_txt_name_u =save_dir_u + 'res.txt'
-    save_txt_name_a =save_dir_a + 'res.txt'
-    f = open(save_txt_name_u, 'w+');    f.close()
-    f = open(save_txt_name_a, 'w+');    f.close()
-        
-    image_num = 0
-    psnr_list = []
-    ssim_list = []
-    uciqe_list = []
-    uiqm_list =[]
-    fid = []
-    wout = []
-
- 
-    model.eval()
-    sampler = GaussianDiffusionSampler(
-        model, config.beta_1, config.beta_T, config.T).to(device)
-    #loss_fn_vgg=lpips.LPIPS(net='vgg')
-    # Executar inferência nos dados
-    dataloaders = [dataloader_u, dataloader_a]
-    inference_with_dataloaders(dataloaders, device, net_model, config, stage="Test")
-    
-    print("Test completed.")
-
-
-def Test(config: Dict,epoch):
+#Precisa de ajustes para funcionar como a funcao de treino
+def test(config: Dict,epoch):
    
     #######################################################
     #### Inicialização dos dados para a rotina de treino ###
@@ -1213,11 +1044,7 @@ def Test(config: Dict,epoch):
                 f.close()
     print("Test completed.")
 
-
-########################################
-
-
-def val(config: Dict,epoch):
+def inference(config: Dict,epoch):
    
     #######################################################
     #### Inicialização dos dados para a rotina de treino ###
@@ -1465,10 +1292,6 @@ def val(config: Dict,epoch):
                 f.close()
     print("Test completed.")
 
-
-
-
-
 if __name__== "__main__" :
     parser = argparse.ArgumentParser()
     modelConfig = {
@@ -1520,6 +1343,6 @@ if __name__== "__main__" :
     for key, value in modelConfig.items():
         setattr(config, key, value)
     print(config)
-    Test(config,1000)
+    test(config,1000)
     # wandb.finish()
     #Test_for_one(modelConfig,epoch=14000)
