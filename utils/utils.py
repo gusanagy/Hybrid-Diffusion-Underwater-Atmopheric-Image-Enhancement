@@ -366,14 +366,14 @@ class Atmospheric_Dataset(data.Dataset):
                 img_path_b = self.test_img_b[idx]
                 img_a= self.transform(image=load_image(img_path_a))
                 img_b= self.transform(image=load_image(img_path_b))
-                return img_a["image"], img_b["image"], img_path_a.split("/")[-1]
+                return img_a["image"], img_b["image"]
 
             else:
                 img_path_a = self.val_img_a[idx]
                 img_path_b = self.val_img_b[idx]
                 img_a= self.transform(image=load_image(img_path_a))
                 img_b= self.transform(image=load_image(img_path_b))
-                return img_a["image"], img_b["image"], img_path_a.split("/")[-1]
+                return img_a["image"], img_b["image"]#, img_path_a.split("/")[-1]
         else:
             if self.task == "train":
                 img_path_a = self.train_img_a[idx]
@@ -453,7 +453,7 @@ class Underwater_Dataset(data.Dataset):
                 img_path_b = self.test_img_b[idx]
                 img_a= self.transform(image=load_image(img_path_a))
                 img_b= self.transform(image=load_image(img_path_b))
-                return img_a["image"], img_b["image"], img_path_a.split("/")[-1]
+                return img_a["image"], img_b["image"]
             else:
                 img_path_a = self.val_img_u[idx]
                 img_path_b = self.val_img_b[idx]

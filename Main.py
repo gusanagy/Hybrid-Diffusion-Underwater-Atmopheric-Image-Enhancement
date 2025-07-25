@@ -41,26 +41,26 @@ def main(model_config = None):
     parser.add_argument('--underwater_data_name', type=str, default="HICRD")
     parser.add_argument('--atmospheric_data_name', type=str, default="LoLI")
     parser.add_argument('--model', type=str, default="standart")
-    parser.add_argument('--dataset_path', type=str, default="./data/")#mudar
-    parser.add_argument('--state', type=str, default="train")  #or eval
+    parser.add_argument('--dataset_path', type=str, default="./data/")
+    parser.add_argument('--state', type=str, default="train")  
     parser.add_argument('--pretrained_path', type=str, default=None)  #or eval output/ckpt/ckpt_1000_final_UIEBTM-DIED.pt
-    parser.add_argument('--inference_image', type=str, default="")  #or eval
-    parser.add_argument('--output_path', type=str, default="./output/")  #or eval
+    parser.add_argument('--inference_image', type=str, default="")
+    parser.add_argument('--output_path', type=str, default="./results/")  
     parser.add_argument('--wandb', action='store_true', help='Actavete Wandb for logging and visualization')  
-    parser.add_argument('--wandb_name', type=str, default="HybridDffusion_4_ICAR")  #or eval
+    parser.add_argument('--wandb_name', type=str, default="HybridDffusion_4_ICAR") 
     parser.add_argument('--epoch', type=int, default=int(2000))
     parser.add_argument('--batch_size', type=int, default=int(16))
+    parser.add_argument('--save_checkpoint', type=int, default=int(200))
     parser.add_argument('--DDP', action='store_true', help="Use Distributed Data Parallel (DDP) for training")
     parser.add_argument('--stage', type=int, default=int(0))#etapa 1 e 2 paras aprendizado de caracteristicas 3 para realce de imagem
     parser.add_argument('--epochs_stage_1', type=int, default=int(1000))
     parser.add_argument('--epochs_stage_2', type=int, default=int(1000))
     parser.add_argument('--device', type=str, default=str("cuda"))
-    #parser.add_argument('--DDP', type=bool, default=)
 
     config = parser.parse_args()
     
     # ================================
-    # 4. Aplicar valores de modelConfig
+    # Aplicar valores de modelConfig
     # ================================
     for key, value in modelConfig.items():
         # Só aplica se não estiver nos args (ex: não sobrescreve se foi passado via linha de comando)
@@ -70,7 +70,7 @@ def main(model_config = None):
     
     
     # ================================
-    # 6. Exibir os parâmetros finais
+    # Exibir os parâmetros finais
     # ================================
     print("\n🔧 Configurações Finais:")
     pprint.pprint(vars(config))
@@ -96,6 +96,8 @@ def main(model_config = None):
     ##################################################
     ### Treinamento, Teste, Avaliação e Inferência ###
     ##################################################
+
+
     if config.state == 'eval':
         print("Avaliando modelo")
         inference(config, config.epoch)

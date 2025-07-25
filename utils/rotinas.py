@@ -1,7 +1,7 @@
 
 import sys
 import os
-
+import wandb
 # Adiciona o diretório pai ao sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from Loss.loss import *
@@ -456,7 +456,6 @@ def log_metrics(wandb_, e, loss, mse_loss, perceptual_dino, msssim, col_loss, op
         "mse_loss": None,
         "Perceptual_dino": None,
         "MS_SSIM": None,
-        "Charbonnier": None,
         "ang_color_loss": None
     }
 
@@ -489,7 +488,7 @@ def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, c
     """
     Treina o modelo alternando entre DataLoaders até que ambos sejam completamente percorridos.
     """
-    # Criar iteradores para os DataLoaders
+    # Criar iteradores para os DataLoaderstrain_with_dataloaders
     iterators = [iter(dataloader) for dataloader in dataloaders]
     active_loaders = [True] * len(dataloaders)  # Marca quais DataLoaders ainda têm batches
 
@@ -608,6 +607,7 @@ def train(config: Dict):
     ###################################################
     ### Inicialização do modelo, otimizador e trainer #
     ###################################################
+    
     net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
                             num_res_blocks=config.num_res_blocks, dropout=config.dropout)
     
@@ -638,26 +638,23 @@ def train(config: Dict):
     ### Definir estágios do treinamento###
     ######################################
     # stages_old = [
-    #     {"name": "Pre-Training_DINO+MS_SSIM", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
-    #     {"name": "Pre-Training_VGG+Charbonnier", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)},
-    #     {"name": "Enhancement_Training_(Charbonnier+Angular_Color_Loss+MS_SSIM)", "lr": config.lr * 0.1, "epochs": config.epochs_stage_3, "number" : int(2)}
-    # ]
+   
     # Aprendizado em dois passos usando gerenciamento do scheduller
     stages = [
-        {"name": "Pre-Training Atmosferic", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
-        {"name": "Enhancement Underwater", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)}
+        {"name": "Atmosferic", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
+        {"name": "Underwater", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)}
     ]#é mais estável manter o mesmo otimizador e só ajustar o lr e weight_decay se for necessário.
 
     ################################
     #### Início do treinamento #####
     ################################
 
-    total_epochs = 0
-    num = 0
-    dataloaders = [dataloader_u, dataloader_a]
+    total_epochs = 0 #o probleema esta em percorrer os datasets de teste
+    num = 0 #talvez eu tenha que reestruturar o dataset e a forma como e ele e carregado 
+
 
     for stage in stages:
-        print(f"Starting stage: {stage['name']} with LR: {stage['lr']} for {stage['epochs']} epochs, Identificador {stage['number']}")
+        print(f"Starting stage: {stage['name']} with LR: {stage['lr']} for {stage['epochs']} epochs, Identificador {stage['number']}\n")
 
         # Atualizar otimizador e scheduler para o estágio atual
         optimizer = torch.optim.AdamW(net_model.parameters(), lr=stage["lr"], weight_decay=1e-4)
@@ -667,27 +664,68 @@ def train(config: Dict):
             optimizer=optimizer, multiplier=config.multiplier, 
             warm_epoch=stage["epochs"] // 10, after_scheduler=cosineScheduler)
 
+        # Seleciona os dataloaders apropriados para treino e teste
+        if "Atmosferic" in stage["name"]:
+            dataloader_train = dataloader_a
+            dataloader_test = dataloader_a_test
+        elif "Underwater" in stage["name"]:
+            dataloader_train = dataloader_u
+            dataloader_test = dataloader_u_test
+        else:
+            raise ValueError(f"Nome de estágio inválido: {stage['name']}")
+        
         for e in range(stage["epochs"]):
             current_epoch = total_epochs + e
-            if config.DDP:
-                for dataloader in dataloaders:
-                    dataloader.sampler.set_epoch(current_epoch)
+            # Ajusta samplers por época se DDP estiver ativado
+            if config.DDP and hasattr(dataloader_train, 'sampler'):
+                dataloader_train.sampler.set_epoch(current_epoch)
 
             # Alternar entre DataLoaders e treinar
-            num = train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, current_epoch, num, stage=stage["number"])                               
+            num = train_with_dataloaders(
+                                        dataloaders=[dataloader_train],
+                                        device=device,
+                                        trainer=trainer,
+                                        optimizer=optimizer,
+                                        net_model=net_model,
+                                        config=config,
+                                        e=current_epoch,
+                                        num=num,
+                                        stage=stage["number"]
+                                        )                               
 
             # Atualizar scheduler
             warmUpScheduler.step()
 
             # Salvar checkpoints a cada 200 épocas globais 
-            if current_epoch % 200 == 0 or current_epoch == stage["epochs"] - 1:
-                save_checkpoint(net_model, ckpt_savedir, current_epoch, config, stage = stage["name"],dataset_name=config.underwater_data_name+config.atmospheric_data_name)
+            if current_epoch % config.save_checkpoint == 0 or current_epoch == stage["epochs"] - 1:
 
+                save_checkpoint(net_model,
+                                ckpt_savedir,
+                                current_epoch,
+                                config, stage = stage["name"],
+                                dataset_name=config.underwater_data_name+config.atmospheric_data_name)
+                
                  # Logar métricas de teste a cada 10 épocas
                 with torch.no_grad():
                     # Testar com os DataLoaders de teste
-                    test_with_dataloaders(dataloader_u_test, dataloader_a_test, device, net_model, config, current_epoch, stage=stage["number"])
-                    
+                    num = test_with_dataloaders(
+                        dataloaders=dataloaders_test,
+                        device=device,
+                        trainer=trainer,
+                        optimizer=optimizer,
+                        net_model=net_model,
+                        config=config,
+                        e=current_epoch,
+                        num=num,
+                        stage=stage["number"]
+                        )
+                  # Alerta no WandB
+                if config.wandb:  # garantir que wandb esteja ativado
+                    wandb.alert(
+                        title="✅ Checkpoint salvo e Teste Funcional",
+                        text=f"Checkpoint salvo e teste realizado na época {current_epoch} no estágio '{stage['name']}'.",
+                        level=wandb.AlertLevel.INFO
+        )                 
 
         total_epochs += stage["epochs"]
     save_checkpoint(net_model, ckpt_savedir, total_epochs, config, stage = "final", dataset_name=config.underwater_data_name+config.atmospheric_data_name)
@@ -697,6 +735,7 @@ def train(config: Dict):
 ### Teste e Inferencia ###
 ##########################
 
+##copiar a funcao de treino e fazer um treino inferencia 
 #incompleto
 def process_batch_inference(sampler, input, label, device, net_model, config, stage):
     """
