@@ -27,7 +27,7 @@ def main(model_config = None):
         "img_size": 32,
         "grad_clip": 1.,
         "device": "cuda:0", #MODIFIQUEI
-        "device_list": [0],#[0, 1]
+        "device_list": [1, 0],#[0, 1]
         #"device_list": [3,2,1,0],
         
         "ddim":True,
@@ -56,6 +56,7 @@ def main(model_config = None):
     parser.add_argument('--epochs_stage_1', type=int, default=int(1000))
     parser.add_argument('--epochs_stage_2', type=int, default=int(1000))
     parser.add_argument('--device', type=str, default=str("cuda"))
+    parser.add_argument('--device_list', type=list, default=[int(1), int(0)], help="For multigpu process use [1, 0] or [n, ... ,1 , 0] for define gpu device ID. If you have a sigle gpu use [0]. Default [1, 0]") #MODIFIQUEI
 
     config = parser.parse_args()
     
@@ -98,17 +99,17 @@ def main(model_config = None):
     ##################################################
 
 
-    if config.state == 'eval':
+    if config.state == 'test': # avaliar o modelo com os dados de teste
         print("Avaliando modelo")
         inference(config, config.epoch)
-    elif config.state == 'train':
+    elif config.state == 'train': # treinar e avaliar o modelo durante o treinamento
         print("Treinando modelo")
         train(config)
-    elif config.state == 'inference':
+    elif config.state == 'inference':# faz a inferencia de uma unica imagem carregando os checkpoints do modelo
         print("Inferindo modelo")
         test(config,config.epoch)
     else:
-        print("Invalid state/nPlease use 'train', 'eval' or 'inference'.")
+        print("Invalid state/nPlease use 'train', 'test' or 'inference'.")
     #train(config)#importar a funcao ou classe de papeline de treinamento== treino/teste e carregar as configs e rodar
     #Testi(config, 1000)
     #python main.py --dataset "RUIE" --state "test" --epoch 500

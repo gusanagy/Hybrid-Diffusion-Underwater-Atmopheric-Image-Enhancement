@@ -427,6 +427,10 @@ class DynamicUNet(nn.Module):
             ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
             ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
             ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
+            ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
+            ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
+            ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
+            ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
             ResBlock(now_ch, now_ch, tdim, dropout, attn=True)
         ])
 
