@@ -44,7 +44,7 @@ from metrics.metrics import *
 ### Novas funcoes para o treinamento ###
 ########################################
 
-def process_batch(input, label, device, trainer, optimizer, net_model, config, e, stage):
+def process_batch(input, label, device, trainer, optimizer, net_model, config, e, stage, state):
     """
     Processa um batch: move para o dispositivo, calcula perdas e realiza o backward pass.
     """
@@ -55,18 +55,22 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     
     [loss, mse_loss, perceptual_dino, msssim, col_loss] = trainer(input, label, stage)
 
-
-    # Backpropagation e atualização dos parâmetros
-    loss.mean().backward()
-    torch.nn.utils.clip_grad_norm_(net_model.parameters(), config.grad_clip)
-    optimizer.step()
+    if torch.isnan(loss).any():
+        print(f"Warning: NaN detected in loss at epoch {e}, stage {stage}. Skipping batch.")
+    
+    if state == "Train":
+        # Backpropagation e atualização dos parâmetros
+        loss.mean().backward()
+        torch.nn.utils.clip_grad_norm_(net_model.parameters(), config.grad_clip)
+        optimizer.step()
 
     
     return loss, mse_loss, perceptual_dino, msssim, col_loss
 
-def log_metrics(wandb_, e, loss, mse_loss, perceptual_dino, msssim, col_loss, optimizer, tqdmDataLoader, num, stage, task):
+def log_metrics(wandb_, epoch_local, epoch_global, loss, mse_loss, perceptual_dino,
+                msssim, col_loss, optimizer, tqdmDataLoader, num, stage, task):
     """
-    Registra métricas no TQDM e no WandB, lidando com exceções ao calcular as métricas.
+    Registra métricas no tqdm e no WandB, com informações claras de época e batch.
     """
     metrics = {
         "loss": None,
@@ -76,98 +80,137 @@ def log_metrics(wandb_, e, loss, mse_loss, perceptual_dino, msssim, col_loss, op
         "ang_color_loss": None
     }
 
-    # Processar cada métrica com try-except
     for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, msssim, col_loss]):
         try:
             metrics[key] = value.mean().item()
-        except Exception as ex:
-            #print(f"Warning: Failed to process {key}: {ex}")
-            pass
-    
-    # Atualizar tqdmDataLoader
+        except Exception:
+            pass  # Métrica inválida ou erro ao calcular
+
+    # Atualiza barra de progresso com info legível
     tqdmDataLoader.set_postfix(ordered_dict={
-        "epoch": e,
-        **{k: (v if v is not None else "Error") for k, v in metrics.items()},
+        "ep": epoch_local,
+        "ep_glob": epoch_global,
+        "batch": num + 1,
         "LR": optimizer.state_dict()['param_groups'][0]["lr"],
-        "num": num + 1
+        **{k: (f"{v:.4f}" if v is not None else "Err") for k, v in metrics.items()}
     })
 
-    # Registrar no wandb
+    # Loga no wandb com epoch global/local e batch
     if wandb_:
-        wandb.log({f"{task} {stage}": {
-            "epoch": e,
-            **{k: v for k, v in metrics.items() if v is not None},
-            "LR": optimizer.state_dict()['param_groups'][0]["lr"],
-            "num": num + 1
-        }})
+        wandb.log({
+            f"{task} {stage}": {
+                "epoch_local": epoch_local,
+                "epoch_global": epoch_global,
+                "batch": num + 1,
+                "LR": optimizer.state_dict()['param_groups'][0]["lr"],
+                **{k: v for k, v in metrics.items() if v is not None}
+            }
+        })
 
-def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, e, num, stage):
+def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
+                           config, epoch_local, epoch_global, num, stage, task):
     """
-    Treina o modelo alternando entre DataLoaders até que ambos sejam completamente percorridos.
+    Treina intercalando dataloaders, logando corretamente batch e época.
     """
-    # Criar iteradores para os DataLoaderstrain_with_dataloaders
-    iterators = [iter(dataloader) for dataloader in dataloaders]
-    active_loaders = [True] * len(dataloaders)  # Marca quais DataLoaders ainda têm batches
+    iterators = [iter(d) for d in dataloaders]
+    active = [True] * len(dataloaders)
 
-    with tqdm(total=sum(len(dataloader) for dataloader in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
-        while any(active_loaders):  # Continua enquanto houver loaders ativos
+    with tqdm(total=sum(len(d) for d in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
+        while any(active):
             for i, iterator in enumerate(iterators):
-                if not active_loaders[i]:
-                    continue  # Pule se o DataLoader já foi completamente percorrido
+                if not active[i]:
+                    continue
 
                 try:
-                    input, label = next(iterator)  # Obter o próximo batch
-                    #print("input shape: ",input.shape,"label shape: ",label.shape)
-                    # Processar batch #modificar as saidas para o novo modelo
+                    input, label = next(iterator)
                     loss, mse_loss, perceptual_dino, msssim, col_loss = process_batch(
-                        input, label, device, trainer, optimizer, net_model, config, e, stage
+                        input, label, device, trainer, optimizer, net_model,
+                        config, epoch_local, stage, task
                     )
 
-                    # Logar métricas
-                    log_metrics(config.wandb, e, loss, mse_loss, perceptual_dino, msssim, col_loss, optimizer, tqdmDataLoader, num, stage, task="Train")
+                    log_metrics(config.wandb, epoch_local, epoch_global, loss, mse_loss,
+                                perceptual_dino, msssim, col_loss,
+                                optimizer, tqdmDataLoader, num, stage, task)
 
                     num += 1
                     tqdmDataLoader.update(1)
 
                 except StopIteration:
-                    # Marcar o DataLoader como concluído
-                    active_loaders[i] = False
+                    active[i] = False
 
     return num
 
-def val_with_dataloaders(dataloaders, device, trainer, optimizer, net_model, config, e, num, stage):
+def val_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
+                         config, epoch_local, epoch_global, num, stage):
     """
-    Treina o modelo alternando entre DataLoaders até que ambos sejam completamente percorridos.
+    Validação do modelo com logging de épocas e batches.
     """
-    # Criar iteradores para os DataLoaders
-    iterators = [iter(dataloader) for dataloader in dataloaders]
-    active_loaders = [True] * len(dataloaders)  # Marca quais DataLoaders ainda têm batches
+    iterators = [iter(d) for d in dataloaders]
+    active = [True] * len(dataloaders)
 
-    with tqdm(total=sum(len(dataloader) for dataloader in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
-        while any(active_loaders):  # Continua enquanto houver loaders ativos
+    last_loss = None
+
+    with tqdm(total=sum(len(d) for d in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
+        while any(active):
             for i, iterator in enumerate(iterators):
-                if not active_loaders[i]:
-                    continue  # Pule se o DataLoader já foi completamente percorrido
+                if not active[i]:
+                    continue
 
                 try:
-                    input, label = next(iterator)  # Obter o próximo batch
-                    #print("input shape: ",input.shape,"label shape: ",label.shape)
-                    # Processar batch #modificar as saidas para o novo modelo
+                    input, label = next(iterator)
                     loss, mse_loss, perceptual_dino, msssim, col_loss = process_batch(
-                        input, label, device, trainer, optimizer, net_model, config, e, stage
+                        input, label, device, trainer, optimizer, net_model,
+                        config, epoch_local, stage, state="val"
                     )
 
-                    # Logar métricas
-                    log_metrics(config.wandb, e, loss, mse_loss, perceptual_dino, msssim, col_loss, optimizer, tqdmDataLoader, num, stage, task="val")
+                    log_metrics(config.wandb, epoch_local, epoch_global, loss, mse_loss,
+                                perceptual_dino, msssim, col_loss,
+                                optimizer, tqdmDataLoader, num, stage, task="Val")
 
                     num += 1
                     tqdmDataLoader.update(1)
+                    last_loss = loss.mean().item()
 
                 except StopIteration:
-                    # Marcar o DataLoader como concluído
-                    active_loaders[i] = False
+                    active[i] = False
 
-    return loss, num
+    return last_loss, num
+def test_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
+                          config, epoch_local, epoch_global, num, stage):
+    """
+    Teste final do modelo com logging consistente.
+    """
+    iterators = [iter(d) for d in dataloaders]
+    active = [True] * len(dataloaders)
+
+    last_loss = None
+
+    with tqdm(total=sum(len(d) for d in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
+        while any(active):
+            for i, iterator in enumerate(iterators):
+                if not active[i]:
+                    continue
+
+                try:
+                    input, label = next(iterator)
+                    loss, mse_loss, perceptual_dino, msssim, col_loss = process_batch(
+                        input, label, device, trainer, optimizer, net_model,
+                        config, epoch_local, stage, state="test"
+                    )
+
+                    log_metrics(config.wandb, epoch_local, epoch_global, loss, mse_loss,
+                                perceptual_dino, msssim, col_loss,
+                                optimizer, tqdmDataLoader, num, stage, task="Test")
+
+                    num += 1
+                    tqdmDataLoader.update(1)
+                    last_loss = loss.mean().item()
+
+                except StopIteration:
+                    active[i] = False
+
+    return last_loss, num
+
 
 def save_checkpoint(net_model, ckpt_savedir, e, config, stage, dataset_name):
     """
@@ -268,6 +311,8 @@ def train(config: Dict):
 
     total_epochs = 0 #o probleema esta em percorrer os datasets de teste
     num = 0 #talvez eu tenha que reestruturar o dataset e a forma como e ele e carregado 
+    epoch_global = 0
+    epoch_local = 0
 
 
     for stage in stages:
@@ -293,13 +338,13 @@ def train(config: Dict):
         else:
             raise ValueError(f"Nome de estágio inválido: {stage['name']}")
         
-        for e in range(stage["epochs"]):
-            current_epoch = total_epochs + e
+        for epoch_local in range(stage["epochs"]):
+            epoch_global = total_epochs + epoch_local
             # Ajusta samplers por época se DDP estiver ativado
             if config.DDP and hasattr(dataloader_train, 'sampler'):
-                dataloader_train.sampler.set_epoch(current_epoch)
-
-            # Alternar entre DataLoaders e treinar
+                dataloader_train.sampler.set_epoch(epoch_global)
+            # Proteção contra erro se o modelo estiver no modo train
+            
             num = train_with_dataloaders(
                                         dataloaders=[dataloader_train],
                                         device=device,
@@ -307,37 +352,40 @@ def train(config: Dict):
                                         optimizer=optimizer,
                                         net_model=net_model,
                                         config=config,
-                                        e=current_epoch,
+                                        epoch_local=epoch_local,
+                                        epoch_global=epoch_global,
                                         num=num,
-                                        stage=stage["number"]
+                                        stage=stage["number"],
+                                        task="Train"
                                         )                               
 
             # Atualizar scheduler
             warmUpScheduler.step()
 
             # Salvar checkpoints a cada 200 épocas globais 
-            if current_epoch % config.save_checkpoint == 0 or current_epoch == stage["epochs"] - 1:
+            if epoch_global % config.save_checkpoint == 0 or epoch_local == stage["epochs"] - 1:
                 
                  # Logar métricas de teste a cada 10 épocas
                 with torch.no_grad():
                     # Testar com os DataLoaders de teste
-                    loss ,num = val_with_dataloaders(
+                    loss, num = val_with_dataloaders(
                         dataloaders=[dataloader_test],
                         device=device,
                         trainer=trainer,
                         optimizer=optimizer,
                         net_model=net_model,
                         config=config,
-                        e=current_epoch,
+                        epoch_local=epoch_local,
+                        epoch_global=epoch_global,
                         num=num,
                         stage=stage["number"]
-                        )
-                    
+                    )
+
                     if loss < best_loss:
                         best_loss = loss
                         save_checkpoint(net_model,
                                         ckpt_savedir,
-                                        current_epoch,
+                                        epoch_global,
                                         config,
                                         stage=stage["name"],
                                         dataset_name="BEST_" + stage["name"] + "_" + dataset_name)
@@ -345,7 +393,7 @@ def train(config: Dict):
             if config.wandb:
                 wandb.alert(
                     title="🌟 Novo Melhor Modelo!",
-                    text=f"Melhor MSE: {loss:.5f} na época {current_epoch}",
+                    text=f"Melhor MSE: {loss:.5f} na época {epoch_global} do estágio {stage['name']}",
                     level=wandb.AlertLevel.INFO
                 )
               
@@ -445,17 +493,7 @@ def inference_with_dataloaders(dataloaders, device, net_model, config, stage):
 
     return num
 
-def save_images(output, input, label, config, stage, num):
-    """
-    Salva as imagens de entrada, rótulo e saída (inferida) em uma pasta de output.
-    """
-    os.makedirs(config.output_path, exist_ok=True)
-    #modificar para o formato das imagens ideal e salvar na pasta. receber o endereco config e nome da pasta a ser modificada
-    # Salvar as imagens
-    output_image = output[0].cpu().detach().numpy().transpose(1, 2, 0)  # Transpor para HxWxC
-    
-    # Converter para imagem (exemplo com matplotlib)
-    plt.imsave(os.path.join(config.output_path, f'output_{stage}_{num}.png'), output_image)
+
     
 #Precisa de ajustes para funcionar como a funcao de treino
 def test(config: Dict,epoch):

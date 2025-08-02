@@ -373,7 +373,7 @@ class Atmospheric_Dataset(data.Dataset):
                 img_path_b = self.val_img_b[idx]
                 img_a= self.transform(image=load_image(img_path_a))
                 img_b= self.transform(image=load_image(img_path_b))
-                return img_a["image"], img_b["image"]#, img_path_a.split("/")[-1]
+                return img_a["image"], img_b["image"], img_path_a.split("/")[-1]
         else:
             if self.task == "train":
                 img_path_a = self.train_img_a[idx]
@@ -506,3 +506,16 @@ def plot_images_from_dataloader(dataloader, num_images=8):
     
     plt.tight_layout()
     plt.show()
+
+
+def save_images(output, input, label, config, stage, num):
+    """
+    Salva as imagens de entrada, rótulo e saída (inferida) em uma pasta de output.
+    """
+    os.makedirs(config.output_path, exist_ok=True)
+    #modificar para o formato das imagens ideal e salvar na pasta. receber o endereco config e nome da pasta a ser modificada
+    # Salvar as imagens
+    output_image = output[0].cpu().detach().numpy().transpose(1, 2, 0)  # Transpor para HxWxC
+    
+    # Converter para imagem (exemplo com matplotlib)
+    plt.imsave(os.path.join(config.output_path, f'output_{stage}_{num}.png'), output_image)

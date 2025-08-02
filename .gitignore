@@ -20,3 +20,5 @@ __pycache__/
 wandb_token.txt
 wandb/*
 cluster.ipynb
+DA_dataset_V2.zip
+*/__pycache__/*

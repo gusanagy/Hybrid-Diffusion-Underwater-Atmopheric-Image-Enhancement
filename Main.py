@@ -27,7 +27,7 @@ def main(model_config = None):
         "img_size": 32,
         "grad_clip": 1.,
         "device": "cuda:0", #MODIFIQUEI
-        "device_list": [1, 0],#[0, 1]
+        "device_list": [0],#[0, 1]
         #"device_list": [3,2,1,0],
         
         "ddim":True,
@@ -56,7 +56,7 @@ def main(model_config = None):
     parser.add_argument('--epochs_stage_1', type=int, default=int(1000))
     parser.add_argument('--epochs_stage_2', type=int, default=int(1000))
     parser.add_argument('--device', type=str, default=str("cuda"))
-    parser.add_argument('--device_list', type=list, default=[int(1), int(0)], help="For multigpu process use [1, 0] or [n, ... ,1 , 0] for define gpu device ID. If you have a sigle gpu use [0]. Default [1, 0]") #MODIFIQUEI
+    #parser.add_argument('--device_list', type=list, default=[int(1), int(0)], help="For multigpu process use [1, 0] or [n, ... ,1 , 0] for define gpu device ID. If you have a sigle gpu use [0]. Default [1, 0]") #MODIFIQUEI
 
     config = parser.parse_args()
     
