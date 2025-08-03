@@ -12,6 +12,7 @@ from typing import Dict
 import cv2
 import numpy as np
 import lpips
+from metrics.metrics import *
 
 def extract(v, t, x_shape):
     """
@@ -175,7 +176,9 @@ class GaussianDiffusionTrainer(nn.Module):
         #loss += msssim
 
         #return [loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss]
-        return [loss, mse_loss, perceptual_dino, msssim, col_loss]
+
+
+        return [loss, mse_loss, perceptual_dino, msssim, col_loss, y_0_pred]
 
 
 

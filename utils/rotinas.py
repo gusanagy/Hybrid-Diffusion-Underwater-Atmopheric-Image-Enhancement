@@ -53,7 +53,7 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
     #print("input shape: ",input.shape,"label shape: ",label.shape)
     optimizer.zero_grad()
     
-    [loss, mse_loss, perceptual_dino, msssim, col_loss] = trainer(input, label, stage)
+    [loss, mse_loss, perceptual_dino, msssim, col_loss, res_img] = trainer(input, label, stage)
 
     if torch.isnan(loss).any():
         print(f"Warning: NaN detected in loss at epoch {e}, stage {stage}. Skipping batch.")
@@ -63,9 +63,11 @@ def process_batch(input, label, device, trainer, optimizer, net_model, config, e
         loss.mean().backward()
         torch.nn.utils.clip_grad_norm_(net_model.parameters(), config.grad_clip)
         optimizer.step()
-
-    
-    return loss, mse_loss, perceptual_dino, msssim, col_loss
+        return loss, mse_loss, perceptual_dino, msssim, col_loss
+    else:
+        # Modo de avaliação, não realiza backpropagation
+        return res_img
+        
 
 def log_metrics(wandb_, epoch_local, epoch_global, loss, mse_loss, perceptual_dino,
                 msssim, col_loss, optimizer, tqdmDataLoader, num, stage, task):
@@ -143,38 +145,100 @@ def train_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
 def val_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
                          config, epoch_local, epoch_global, num, stage):
     """
-    Validação do modelo com logging de épocas e batches.
+    Valida o modelo em múltiplos dataloaders e retorna a métrica usada para checkpoint,
+    o número acumulado de amostras e o dicionário de métricas médias.
+    Também realiza logging das métricas no wandb se habilitado.
     """
+
     iterators = [iter(d) for d in dataloaders]
     active = [True] * len(dataloaders)
 
-    last_loss = None
-
+    # Listas para acumular métricas
+    psnr_list, ssim_list = [], []
+    uciqe_list, uiqm_list = [], []
+    uiconm_list, uism_list, uicm_list = [], [], []
+    #fid_list = []
+    #fid = FID()
+    avg_metrics = {}
+    checkpoint_score = 0
     with tqdm(total=sum(len(d) for d in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
-        while any(active):
+        while any(active) :
             for i, iterator in enumerate(iterators):
                 if not active[i]:
                     continue
-
+                
                 try:
-                    input, label = next(iterator)
-                    loss, mse_loss, perceptual_dino, msssim, col_loss = process_batch(
-                        input, label, device, trainer, optimizer, net_model,
-                        config, epoch_local, stage, state="val"
+                    input_image, gt_image = next(iterator)
+                    
+                    # Geração da imagem de saída
+                    sampledImgs = process_batch(
+                        input_image, gt_image, device, trainer, optimizer, net_model,
+                        config, epoch_local, stage=stage, state="eval"
                     )
+                    sampledImgs = (sampledImgs.to("cpu") + 1) / 2.0 # de onde eu tirei isso?
 
-                    log_metrics(config.wandb, epoch_local, epoch_global, loss, mse_loss,
-                                perceptual_dino, msssim, col_loss,
-                                optimizer, tqdmDataLoader, num, stage, task="Val")
+                    #fid_score_value = fid.compute_fid(gt_image, sampledImgs)
 
-                    num += 1
+                    for j in range(sampledImgs.shape[0]):
+                        res_img = np.clip(sampledImgs[j].detach().cpu().numpy().transpose(1, 2, 0), 0, 1) * 255
+                        gt_img = np.clip(gt_image[j].detach().cpu().numpy().transpose(1, 2, 0), 0, 1) * 255
+
+                        psnr = PSNR(res_img, gt_img, data_range=255)
+                        ssim = SSIM(res_img, gt_img, channel_axis=2, data_range=255)
+
+                        uiqm0, uciqe0, uism, uicm, uiconm = nmetrics(res_img)
+                        uiqm1 = getUIQM(res_img)
+
+                        # Armazenar as métricas
+                        psnr_list.append(psnr)
+                        ssim_list.append(ssim)
+                        uciqe_list.append(uciqe0)
+                        uiqm_list.append(uiqm1)
+                        #fid_list.append(fid_score_value)
+                        uism_list.append(uism)
+                        uicm_list.append(uicm)
+                        uiconm_list.append(uiconm)
+
+                        num += 1
+
                     tqdmDataLoader.update(1)
-                    last_loss = loss.mean().item()
 
                 except StopIteration:
                     active[i] = False
 
-    return last_loss, num
+                    # Cálculo das médias das métricas
+                    avg_metrics = {
+                        "val/psnr": sum(psnr_list) / len(psnr_list) if psnr_list else 0,
+                        "val/ssim": sum(ssim_list) / len(ssim_list) if ssim_list else 0,
+                        "val/uiqm": sum(uiqm_list) / len(uiqm_list) if uiqm_list else 0,
+                        "val/uciqe": sum(uciqe_list) / len(uciqe_list) if uciqe_list else 0,
+                        "val/uism": sum(uism_list) / len(uism_list) if uism_list else 0,
+                        "val/uicm": sum(uicm_list) / len(uicm_list) if uicm_list else 0,
+                        "val/uiconm": sum(uiconm_list) / len(uiconm_list) if uiconm_list else 0,
+                        #"val/fid": sum(fid_list) / len(fid_list) if fid_list else float("inf"),
+                    }
+                    values = [v for v in avg_metrics.values() if isinstance(v, (int, float))]
+                    checkpoint_score += sum(values) / len(values) if values else 0
+                    #print(f"Average metrics for stage {stage}: {avg_metrics}")
+                    #🟡 (Opcional) Logging das métricas com wandb
+                    #Loga no wandb com epoch global/local e batch
+                    if config.wandb:
+                        wandb.log({
+                            f" {stage}": {
+                                "epoch_local": epoch_local,
+                                "epoch_global": epoch_global,
+                                "batch": num + 1,
+                                "LR": optimizer.state_dict()['param_groups'][0]["lr"],
+                                **{k: v for k, v in avg_metrics.items() if v is not None}
+                            }
+                        })
+                    
+
+    # Ex: usar SSIM como critério para salvar o melhor modelo
+    #checkpoint_score = avg_metrics["val/ssim"]
+
+    return checkpoint_score, num
+
 def test_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
                           config, epoch_local, epoch_global, num, stage):
     """
@@ -242,8 +306,8 @@ def train(config: Dict):
     #######################################################
     underwater_data_train = Underwater_Dataset(config.underwater_data_name,task="train")
     atmospheric_data_train = Atmospheric_Dataset(config.atmospheric_data_name, task="train")
-    underwater_data_test = Underwater_Dataset(config.underwater_data_name,task="test")
-    atmospheric_data_test = Atmospheric_Dataset(config.atmospheric_data_name, task="test")
+    underwater_data_test = Underwater_Dataset(config.underwater_data_name,task="val")
+    atmospheric_data_test = Atmospheric_Dataset(config.atmospheric_data_name, task="val")
 
     if config.DDP:
         train_sampler_u = torch.utils.data.distributed.DistributedSampler(underwater_data_train)
@@ -314,7 +378,6 @@ def train(config: Dict):
     epoch_global = 0
     epoch_local = 0
 
-
     for stage in stages:
         print(f"Starting stage: {stage['name']} with LR: {stage['lr']} for {stage['epochs']} epochs, Identificador {stage['number']}\n")
 
@@ -358,17 +421,18 @@ def train(config: Dict):
                                         stage=stage["number"],
                                         task="Train"
                                         )                               
-
             # Atualizar scheduler
             warmUpScheduler.step()
 
             # Salvar checkpoints a cada 200 épocas globais 
             if epoch_global % config.save_checkpoint == 0 or epoch_local == stage["epochs"] - 1:
+                print(f"Evaluating checkpoint at epoch {epoch_global} for stage {stage['name']}")
                 
                  # Logar métricas de teste a cada 10 épocas
                 with torch.no_grad():
                     # Testar com os DataLoaders de teste
-                    loss, num = val_with_dataloaders(
+                    
+                    val, num = val_with_dataloaders(
                         dataloaders=[dataloader_test],
                         device=device,
                         trainer=trainer,
@@ -379,10 +443,11 @@ def train(config: Dict):
                         epoch_global=epoch_global,
                         num=num,
                         stage=stage["number"]
-                    )
+                        )
 
-                    if loss < best_loss:
-                        best_loss = loss
+                    if val < best_loss:
+                        print(f"New best model found at epoch {epoch_global} for stage {stage['name']} with loss: {loss:.5f}")
+                        best_loss = val
                         save_checkpoint(net_model,
                                         ckpt_savedir,
                                         epoch_global,
@@ -390,12 +455,12 @@ def train(config: Dict):
                                         stage=stage["name"],
                                         dataset_name="BEST_" + stage["name"] + "_" + dataset_name)
 
-            if config.wandb:
-                wandb.alert(
-                    title="🌟 Novo Melhor Modelo!",
-                    text=f"Melhor MSE: {loss:.5f} na época {epoch_global} do estágio {stage['name']}",
-                    level=wandb.AlertLevel.INFO
-                )
+                        if config.wandb:
+                            wandb.alert(
+                                title="🌟 Novo Melhor Modelo!",
+                                text=f"Melhor validacao: {val:.5f} na época {epoch_global} do estágio {stage['name']}",
+                                level=wandb.AlertLevel.INFO
+                            )
               
 
         total_epochs += stage["epochs"]
@@ -405,6 +470,103 @@ def train(config: Dict):
 ##########################
 ### Teste e Inferencia ###
 ##########################
+# Treinamento principal Train + validation => Best_Checkpoint
+def test(config: Dict):
+    if config.DDP:
+        local_rank = int(os.getenv('LOCAL_RANK', -1))
+        print('Local rank:', local_rank)
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend='nccl')
+        device = torch.device("cuda", local_rank)
+    
+    #######################################################
+    #### Inicialização dos dados para a rotina de treino ###
+    #######################################################
+    underwater_data_test = Underwater_Dataset(config.underwater_data_name,task="test")
+    atmospheric_data_test = Atmospheric_Dataset(config.atmospheric_data_name, task="test")
+    
+    dataloader_u_test = DataLoader(underwater_data_test, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+    dataloader_a_test = DataLoader(atmospheric_data_test, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
+
+    ###################################################
+    ### Inicialização do modelo, otimizador e trainer #
+    ###################################################
+    
+    net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
+                            num_res_blocks=config.num_res_blocks, dropout=config.dropout)
+    
+    
+    
+    
+
+    ######################################
+    ### Definir estágios do treinamento###
+    ######################################
+    # stages_old = [
+   
+    # Aprendizado em dois passos usando gerenciamento do scheduller
+    stages = [
+        {"name": "Atmosferic", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
+        {"name": "Underwater", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)}
+    ]
+
+    ################################
+    #### Início do teste ###########
+    ################################
+
+    total_epochs = 0 #o probleema esta em percorrer os datasets de teste
+    num = 0 #talvez eu tenha que reestruturar o dataset e a forma como e ele e carregado 
+    epoch_global = 0
+    epoch_local = 0
+
+    net_model.eval()  # Coloca o modelo em modo de avaliação
+    for stage in stages:
+        print(f"Starting stage: {stage['name']} with LR: {stage['lr']} for {stage['epochs']} epochs, Identificador {stage['number']}\n")
+
+        # Atualizar otimizador e scheduler para o estágio atual
+        #optimizer = torch.optim.AdamW(net_model.parameters(), lr=stage["lr"], weight_decay=1e-4)
+        #cosineScheduler = optim.lr_scheduler.CosineAnnealingLR(
+        #     optimizer=optimizer, T_max=stage["epochs"], eta_min=0, last_epoch=-1)
+        # warmUpScheduler = GradualWarmupScheduler(
+        #     optimizer=optimizer, multiplier=config.multiplier, 
+        #     warm_epoch=stage["epochs"] // 10, after_scheduler=cosineScheduler)
+
+        # Seleciona os dataloaders apropriados para treino e teste
+        if "Atmosferic" in stage["name"]:
+            dataloader_test = dataloader_a_test
+            dataset_name = config.atmospheric_data_name
+        elif "Underwater" in stage["name"]:
+            dataloader_test = dataloader_u_test
+            dataset_name = config.atmospheric_data_name + config.underwater_data_name
+        else:
+            raise ValueError(f"Nome de estágio inválido: {stage['name']}")
+        
+        for epoch_local in range(stage["epochs"]):
+            epoch_global = total_epochs + epoch_local
+            # Ajusta samplers por época se DDP estiver ativado
+            
+            
+            val, num = val_with_dataloaders(
+                        dataloaders=[dataloader_test],
+                        device=device,
+                        trainer=sampler,
+                        #optimizer=optimizer,
+                        net_model=net_model,
+                        config=config,
+                        epoch_local=epoch_local,
+                        epoch_global=epoch_global,
+                        num=num,
+                        stage=stage["number"]
+                        )                               
+            # Atualizar scheduler
+            #warmUpScheduler.step()
+
+            
+              
+
+        total_epochs += stage["epochs"]
+    #save_checkpoint(net_model, ckpt_savedir, total_epochs, config, stage = "final", dataset_name=config.underwater_data_name+config.atmospheric_data_name)
+    print("\nTesting Completed.\n")
 
 ##copiar a funcao de treino e fazer um treino inferencia 
 #incompleto
@@ -425,74 +587,6 @@ def process_batch_inference(sampler, input, label, device, net_model, config, st
     [] = sampler(input, label, stage)
 
     return 
-
-def log_metrics_inference(wandb_, loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, tqdmDataLoader, num, stage):
-    """
-    Registra as métricas durante a inferência.
-    """
-    metrics = {
-        "loss": None,
-        "mse_loss": None,
-        "Perceptual_dino": None,
-        "Perceptual_vgg": None,
-        "MS_SSIM": None,
-        "Charbonnier": None,
-        "ang_color_loss": None
-    }
-
-    # Processar cada métrica
-    for key, value in zip(metrics.keys(), [loss, mse_loss, perceptual_dino, perceptual_vgg, msssim, col_loss]):
-        try:
-            metrics[key] = value.mean().item()
-        except Exception as ex:
-            pass
-
-    # Atualizar tqdmDataLoader
-    tqdmDataLoader.set_postfix(ordered_dict={
-        "num": num + 1,
-        **{k: (v if v is not None else "Error") for k, v in metrics.items()},
-    })
-
-    # Registrar no wandb
-    if wandb_:
-        wandb.log({f"Inference {stage}": {**metrics, "num": num + 1}})
-
-def inference_with_dataloaders(dataloaders, device, net_model, config, stage):
-    """
-    Realiza a inferência no modelo alternando entre DataLoaders.
-    """
-    iterators = [iter(dataloader) for dataloader in dataloaders]
-    active_loaders = [True] * len(dataloaders)  # Marca quais DataLoaders ainda têm batches
-
-    num = 0
-    with tqdm(total=sum(len(dataloader) for dataloader in dataloaders), dynamic_ncols=True) as tqdmDataLoader:
-        while any(active_loaders):  # Continua enquanto houver loaders ativos
-            for i, iterator in enumerate(iterators):
-                if not active_loaders[i]:
-                    continue  # Pule se o DataLoader já foi completamente percorrido
-
-                try:
-                    input, label = next(iterator)  # Obter o próximo batch
-                    
-                    # Processar batch de inferência
-                    loss, mse_loss, perceptual_vgg, perceptual_dino, msssim, charbonnier, col_loss, output = process_batch_inference(
-                        input, label, device, net_model, config, stage
-                    )
-
-                    # Logar métricas
-                    
-                    # Salvar as imagens
-                    save_images(output, input, label, config, stage, num)
-
-                    num += 1
-                    tqdmDataLoader.update(1)
-
-                except StopIteration:
-                    # Marcar o DataLoader como concluído
-                    active_loaders[i] = False
-
-    return num
-
 
     
 #Precisa de ajustes para funcionar como a funcao de treino
@@ -515,22 +609,30 @@ def test(config: Dict,epoch):
 
     model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
                  num_res_blocks=config.num_res_blocks, dropout=0.)
+    
     #Mudar um pouco aqui para carregar o checkpoint do dataset escolhido
     ckpt = torch.load(config.pretrained_path,map_location='cpu')
-    model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
-    print("model load weight done.")
+    net_model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
+    print("\nModel load weight done.\n")
 
+    if len(config.device_list) > 1:
+        print("Using DataParallel with devices:", config.device_list)
+        device = torch.device(f"cuda:{config.device_list[0]}")
+        net_model = torch.nn.DataParallel(net_model, device_ids=config.device_list).to(device)
+    else:
+        device=config.device_list[0]
+        net_model.to(device)
 
     save_dir_u="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.underwater_data_name+"/"
     save_dir_a="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.atmospheric_data_name+"/"
-    print(save_dir_a, save_dir_u)
+    print("\nSaving directories:"+save_dir_a + "\n" + save_dir_u + "\n")
     if not os.path.exists(save_dir_u):
         os.makedirs(save_dir_u)
     if not os.path.exists(save_dir_a):
         os.makedirs(save_dir_a)
-
-    print(f"Save dir underwater for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_u}")
-    print(f"Save dir atmospheric for combination {config.underwater_data_name+config.atmospheric_data_name}: {save_dir_a}")
+    #NAO ENTENDI ACHO Q ESTA REPETIDO
+    print(f"Save dir underwater for combination {config.underwater_data_name+"_"+config.atmospheric_data_name}: {save_dir_u}")
+    print(f"Save dir atmospheric for combination {config.underwater_data_name+"_"+config.atmospheric_data_name}: {save_dir_a}")
 
     save_txt_name_u =save_dir_u + 'res.txt'
     save_txt_name_a =save_dir_a + 'res.txt'
@@ -548,7 +650,13 @@ def test(config: Dict,epoch):
     fid_list = []
     wout = []
 
- 
+    log_savedir = os.path.join(config.output_path, 'logs')
+    os.makedirs(log_savedir, exist_ok=True)
+
+    ckpt_savedir = os.path.join(config.output_path, 'ckpt')
+    os.makedirs(ckpt_savedir, exist_ok=True)
+
+
     model.eval()
     sampler = GaussianDiffusionSampler(
         model, config.beta_1, config.beta_T, config.T).to(device)
@@ -587,7 +695,6 @@ def test(config: Dict,epoch):
                         #uciqe2 = uciqe(nargin=1,loc=res_Imgs)#usarei este
                         uiqm1 = getUIQM(res_Imgs)
                         
-
                         uciqe_list.append(uciqe0)  
                         uiqm_list.append(uiqm1)
                         psnr_list.append(psnr)
@@ -768,7 +875,7 @@ def inference(config: Dict,epoch):
     model.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
     print("model load weight done.")
 
-
+    #MUDAR PARA UMA UNICA PASTA
     save_dir_u="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.underwater_data_name+"/"
     save_dir_a="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.atmospheric_data_name+"/"
     print(save_dir_a, save_dir_u)

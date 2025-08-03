@@ -476,12 +476,12 @@ def logamee(ch, blocksize=8):
 class FID:
     def __init__(self, device="cpu"):
         self.device = device
-        self.model = inception_v3(pretrained=True, transform_input=False).to(device)
+        self.model = inception_v3(pretrained=True, transform_input=False).to(self.device)
         self.model.fc = nn.Identity()  # Remove a última camada de classificação
         self.model.eval()
 
         self.transform = Compose([
-            Lambda(lambda x: x.cpu().numpy().transpose(1, 2, 0)),  # Converte para formato HWC
+            Lambda(lambda x: x.cpu().detach().numpy().transpose(1, 2, 0)),  # Converte para formato HWC
             #Lambda(lambda x: np.clip((x * 255).astype(np.uint8), 0, 255)),  # Converte imagens HWC para x-RGB Uint FLAV
             Lambda(lambda x: np.clip(x, 0, 1) * 255),  # Clipa para [0, 1] e depois multiplica por 255
             Lambda(lambda x: x.astype(np.uint8)),  # Converte para uint8    
@@ -540,7 +540,6 @@ class FID:
         # Calcular FID
         fid = self._frechet_distance(mu1, sigma1, mu2, sigma2)
         return fid
-    import numpy as np
 
 
 class FID_broke:
