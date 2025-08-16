@@ -157,7 +157,7 @@ class GaussianDiffusionTrainer(nn.Module):
         #dino_weight, msssim_weight = 0.03, 0.03 #definir pesos ao checar as escalar das funcoes de perda
 
         #MSE, MS_SSIM, Charbonnier # Verdadeira etapa de realce
-        dino_weight, msssim_weight,col_loss_weight = 0.5, 0.0045, 1.0
+        dino_weight, msssim_weight,col_loss_weight = 0.2, 0.02, 1.0
 
 
         perceptual_dino = self.loss_perceptual_dino(y_0_pred, gt_images) * dino_weight
@@ -210,6 +210,7 @@ class GaussianDiffusionSampler(nn.Module):##terei que ajustar o diffusion sample
         )
 
     def p_mean_variance(self, input, t, y_t):
+        input = input.float()*2-1
         var = torch.cat([self.posterior_var[1:2], self.betas[1:]])
         var = extract(var, t, input.shape)
         eps = self.model(input, t)
@@ -222,6 +223,8 @@ class GaussianDiffusionSampler(nn.Module):##terei que ajustar o diffusion sample
         # Nao lembro se a imagem que  entra esta entre -1 e 1 ou nao
         input_image = input_image.float()/255.0
         # gt_images = (gt_images.float()/255.0)*2-1
+        #input_image = input_image.float()/255.0# 0 -255 -> 0 - 1 -> -1 - 1
+        #gt_images = (gt_images.float()/255.0)*2-1
 
 
         if ddim == False:

@@ -15,8 +15,8 @@ def main(model_config = None):
         #"epoch": 2000,
         #"batch_size": 16,
         "T": 1000,
-        "channel": 128,
-        "channel_mult": [1, 2, 2, 2],
+        "channel": 64,
+        "channel_mult": [1, 2, 2],#[1, 2, 2, 2]
         "attn": [2],
         "num_res_blocks": 2,
         "dropout": 0.15,
@@ -74,7 +74,7 @@ def main(model_config = None):
     # Exibir os parâmetros finais
     # ================================
     print("\n🔧 Configurações Finais:")
-    pprint.pprint(vars(config))
+    #pprint.pprint(vars(config))
 
     if config.wandb:
         # Verifica se o arquivo de token do wandb existe
@@ -99,15 +99,16 @@ def main(model_config = None):
     ##################################################
 
 
-    if config.state == 'test': # avaliar o modelo com os dados de teste
-        print("Avaliando modelo")
-        inference(config, config.epoch)
-    elif config.state == 'train': # treinar e avaliar o modelo durante o treinamento
-        print("Treinando modelo")
+
+    if config.state == 'train': # treinar e avaliar o modelo durante o treinamento
+        print("training model")
         train(config)
+    elif config.state == 'test': # avaliar o modelo com os dados de teste
+        print("Testing model")
+        test(config)
     elif config.state == 'inference':# faz a inferencia de uma unica imagem carregando os checkpoints do modelo
-        print("Inferindo modelo")
-        test(config,config.epoch)
+        print("Infering model")
+        inference(config)
     else:
         print("Invalid state/nPlease use 'train', 'test' or 'inference'.")
     #train(config)#importar a funcao ou classe de papeline de treinamento== treino/teste e carregar as configs e rodar

@@ -175,7 +175,7 @@ def val_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
                         input_image, gt_image, device, trainer, optimizer, net_model,
                         config, epoch_local, stage=stage, state="eval"
                     )
-                    sampledImgs = (sampledImgs.to("cpu") + 1) / 2.0 # de onde eu tirei isso?
+                    sampledImgs = (sampledImgs.to("cpu") + 1) / 2.0 
 
                     #fid_score_value = fid.compute_fid(gt_image, sampledImgs)
 
@@ -185,15 +185,17 @@ def val_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
 
                         psnr = PSNR(res_img, gt_img, data_range=255)
                         ssim = SSIM(res_img, gt_img, channel_axis=2, data_range=255)
-
-                        uiqm0, uciqe0, uism, uicm, uiconm = nmetrics(res_img)
-                        uiqm1 = getUIQM(res_img)
+                        
+                        uiqm, uicm, uism, uiconm, uciqe=non_ref_based(res_img)
+                        #uiqm0, _, uism, uicm, uiconm = nmetrics(res_img)
+                        #uiqm1 = getUIQM(res_img)
+                        #uciqe_ = uciqe(nargin=1,loc=res_img)#usarei este
 
                         # Armazenar as métricas
                         psnr_list.append(psnr)
                         ssim_list.append(ssim)
-                        uciqe_list.append(uciqe0)
-                        uiqm_list.append(uiqm1)
+                        uciqe_list.append(uciqe)
+                        uiqm_list.append(uiqm)
                         #fid_list.append(fid_score_value)
                         uism_list.append(uism)
                         uicm_list.append(uicm)
@@ -217,6 +219,7 @@ def val_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
                         "val/uiconm": sum(uiconm_list) / len(uiconm_list) if uiconm_list else 0,
                         #"val/fid": sum(fid_list) / len(fid_list) if fid_list else float("inf"),
                     }
+                    print(avg_metrics)
                     values = [v for v in avg_metrics.values() if isinstance(v, (int, float))]
                     checkpoint_score += sum(values) / len(values) if values else 0
                     #print(f"Average metrics for stage {stage}: {avg_metrics}")
@@ -228,6 +231,7 @@ def val_with_dataloaders(dataloaders, device, trainer, optimizer, net_model,
                                 "epoch_local": epoch_local,
                                 "epoch_global": epoch_global,
                                 "batch": num + 1,
+                                "checkpoint_score": checkpoint_score,
                                 "LR": optimizer.state_dict()['param_groups'][0]["lr"],
                                 **{k: v for k, v in avg_metrics.items() if v is not None}
                             }
@@ -280,7 +284,7 @@ def save_checkpoint(net_model, ckpt_savedir, e, config, stage, dataset_name):
     """
     Salva o estado do modelo em um checkpoint.
     """
-    checkpoint_path = os.path.join(ckpt_savedir, f'ckpt_{e}_{stage}_{dataset_name}.pt')
+    checkpoint_path = os.path.join(ckpt_savedir, f'ckpt_{stage}_{e}_{dataset_name}.pt')
     if config.DDP:
         if dist.get_rank() == 0:
             torch.save(net_model.state_dict(), checkpoint_path)
@@ -377,6 +381,7 @@ def train(config: Dict):
     num = 0 #talvez eu tenha que reestruturar o dataset e a forma como e ele e carregado 
     epoch_global = 0
     epoch_local = 0
+    best_loss = None
 
     for stage in stages:
         print(f"Starting stage: {stage['name']} with LR: {stage['lr']} for {stage['epochs']} epochs, Identificador {stage['number']}\n")
@@ -444,10 +449,17 @@ def train(config: Dict):
                         num=num,
                         stage=stage["number"]
                         )
+                    save_checkpoint(net_model,
+                                        ckpt_savedir,
+                                        epoch_global,
+                                        config,
+                                        stage=stage["name"],
+                                        dataset_name=stage["name"] + "_" + dataset_name)
 
-                    if val < best_loss:
-                        print(f"New best model found at epoch {epoch_global} for stage {stage['name']} with loss: {loss:.5f}")
+                    
+                    if best_loss is None or val > best_loss:
                         best_loss = val
+                        print(f"New best model found at epoch {epoch_global} for stage {stage['name']} with loss: {best_loss:.5f}")
                         save_checkpoint(net_model,
                                         ckpt_savedir,
                                         epoch_global,
@@ -461,136 +473,26 @@ def train(config: Dict):
                                 text=f"Melhor validacao: {val:.5f} na época {epoch_global} do estágio {stage['name']}",
                                 level=wandb.AlertLevel.INFO
                             )
+                    
               
 
         total_epochs += stage["epochs"]
+        save_checkpoint(net_model, 
+                    ckpt_savedir,
+                    epoch_global,
+                    config,
+                    stage=stage["name"],
+                    dataset_name="LAST_" + stage["name"] + "_" + dataset_name)
+
     #save_checkpoint(net_model, ckpt_savedir, total_epochs, config, stage = "final", dataset_name=config.underwater_data_name+config.atmospheric_data_name)
     print("Training completed.")
 
 ##########################
 ### Teste e Inferencia ###
 ##########################
-# Treinamento principal Train + validation => Best_Checkpoint
-def test(config: Dict):
-    if config.DDP:
-        local_rank = int(os.getenv('LOCAL_RANK', -1))
-        print('Local rank:', local_rank)
-        torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend='nccl')
-        device = torch.device("cuda", local_rank)
-    
-    #######################################################
-    #### Inicialização dos dados para a rotina de treino ###
-    #######################################################
-    underwater_data_test = Underwater_Dataset(config.underwater_data_name,task="test")
-    atmospheric_data_test = Atmospheric_Dataset(config.atmospheric_data_name, task="test")
-    
-    dataloader_u_test = DataLoader(underwater_data_test, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-    dataloader_a_test = DataLoader(atmospheric_data_test, batch_size=config.batch_size, num_workers=4, drop_last=True, pin_memory=True)
-
-    ###################################################
-    ### Inicialização do modelo, otimizador e trainer #
-    ###################################################
-    
-    net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
-                            num_res_blocks=config.num_res_blocks, dropout=config.dropout)
-    
-    
-    
-    
-
-    ######################################
-    ### Definir estágios do treinamento###
-    ######################################
-    # stages_old = [
-   
-    # Aprendizado em dois passos usando gerenciamento do scheduller
-    stages = [
-        {"name": "Atmosferic", "lr": config.lr, "epochs": config.epochs_stage_1, "number" : int(0)},
-        {"name": "Underwater", "lr": config.lr, "epochs": config.epochs_stage_2, "number" : int(1)}
-    ]
-
-    ################################
-    #### Início do teste ###########
-    ################################
-
-    total_epochs = 0 #o probleema esta em percorrer os datasets de teste
-    num = 0 #talvez eu tenha que reestruturar o dataset e a forma como e ele e carregado 
-    epoch_global = 0
-    epoch_local = 0
-
-    net_model.eval()  # Coloca o modelo em modo de avaliação
-    for stage in stages:
-        print(f"Starting stage: {stage['name']} with LR: {stage['lr']} for {stage['epochs']} epochs, Identificador {stage['number']}\n")
-
-        # Atualizar otimizador e scheduler para o estágio atual
-        #optimizer = torch.optim.AdamW(net_model.parameters(), lr=stage["lr"], weight_decay=1e-4)
-        #cosineScheduler = optim.lr_scheduler.CosineAnnealingLR(
-        #     optimizer=optimizer, T_max=stage["epochs"], eta_min=0, last_epoch=-1)
-        # warmUpScheduler = GradualWarmupScheduler(
-        #     optimizer=optimizer, multiplier=config.multiplier, 
-        #     warm_epoch=stage["epochs"] // 10, after_scheduler=cosineScheduler)
-
-        # Seleciona os dataloaders apropriados para treino e teste
-        if "Atmosferic" in stage["name"]:
-            dataloader_test = dataloader_a_test
-            dataset_name = config.atmospheric_data_name
-        elif "Underwater" in stage["name"]:
-            dataloader_test = dataloader_u_test
-            dataset_name = config.atmospheric_data_name + config.underwater_data_name
-        else:
-            raise ValueError(f"Nome de estágio inválido: {stage['name']}")
-        
-        for epoch_local in range(stage["epochs"]):
-            epoch_global = total_epochs + epoch_local
-            # Ajusta samplers por época se DDP estiver ativado
-            
-            
-            val, num = val_with_dataloaders(
-                        dataloaders=[dataloader_test],
-                        device=device,
-                        trainer=sampler,
-                        #optimizer=optimizer,
-                        net_model=net_model,
-                        config=config,
-                        epoch_local=epoch_local,
-                        epoch_global=epoch_global,
-                        num=num,
-                        stage=stage["number"]
-                        )                               
-            # Atualizar scheduler
-            #warmUpScheduler.step()
-
-            
-              
-
-        total_epochs += stage["epochs"]
-    #save_checkpoint(net_model, ckpt_savedir, total_epochs, config, stage = "final", dataset_name=config.underwater_data_name+config.atmospheric_data_name)
-    print("\nTesting Completed.\n")
-
-##copiar a funcao de treino e fazer um treino inferencia 
-#incompleto
-def process_batch_inference(sampler, input, label, device, net_model, config, stage):
-    """
-    Processa um batch para inferência: move para o dispositivo, faz a inferência e calcula as métricas.
-    """
-    input, label = input.to(device), label.to(device)
-    
-    # Colocar o modelo em modo de avaliação
-    net_model.eval()
-    
-    # Inferência: passagem direta (sem cálculo de perdas ou backprop)
-    with torch.no_grad():
-        output = net_model(input)
-    
-    # Calcular métricas (exemplo: MSE, SSIM, etc.)
-    [] = sampler(input, label, stage)
-
-    return 
-
     
 #Precisa de ajustes para funcionar como a funcao de treino
-def test(config: Dict,epoch):
+def test(config: Dict):
    
     #######################################################
     #### Inicialização dos dados para a rotina de treino ###
@@ -607,7 +509,7 @@ def test(config: Dict,epoch):
     ### Inicialização do modelo, otimizador e trainer ###
     #####################################################
 
-    model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
+    net_model = DynamicUNet(T=config.T, ch=config.channel, ch_mult=config.channel_mult,
                  num_res_blocks=config.num_res_blocks, dropout=0.)
     
     #Mudar um pouco aqui para carregar o checkpoint do dataset escolhido
@@ -625,21 +527,23 @@ def test(config: Dict,epoch):
 
     save_dir_u="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.underwater_data_name+"/"
     save_dir_a="output/result/"+ config.pretrained_path.split('/')[-1] +'/'+config.atmospheric_data_name+"/"
+
     print("\nSaving directories:"+save_dir_a + "\n" + save_dir_u + "\n")
     if not os.path.exists(save_dir_u):
         os.makedirs(save_dir_u)
     if not os.path.exists(save_dir_a):
         os.makedirs(save_dir_a)
+
     #NAO ENTENDI ACHO Q ESTA REPETIDO
-    print(f"Save dir underwater for combination {config.underwater_data_name+"_"+config.atmospheric_data_name}: {save_dir_u}")
-    print(f"Save dir atmospheric for combination {config.underwater_data_name+"_"+config.atmospheric_data_name}: {save_dir_a}")
+    print(f"Save dir underwater for combination {config.underwater_data_name+'_'+config.atmospheric_data_name}: {save_dir_u}")
+    print(f"Save dir atmospheric for combination {config.underwater_data_name+'_'+config.atmospheric_data_name}: {save_dir_a}")
 
     save_txt_name_u =save_dir_u + 'res.txt'
     save_txt_name_a =save_dir_a + 'res.txt'
     f = open(save_txt_name_u, 'w+');    f.close()
     f = open(save_txt_name_a, 'w+');    f.close()
+
     fid_score = FID(device=device)
-    image_num = 0
     psnr_list = []
     ssim_list = []
     uciqe_list = []
@@ -648,7 +552,7 @@ def test(config: Dict,epoch):
     uicm_list =[]
     uiqm_list =[]
     fid_list = []
-    wout = []
+    time_inf = []
 
     log_savedir = os.path.join(config.output_path, 'logs')
     os.makedirs(log_savedir, exist_ok=True)
@@ -657,9 +561,10 @@ def test(config: Dict,epoch):
     os.makedirs(ckpt_savedir, exist_ok=True)
 
 
-    model.eval()
+    net_model.eval()
     sampler = GaussianDiffusionSampler(
-        model, config.beta_1, config.beta_T, config.T).to(device)
+        net_model, config.beta_1, config.beta_T, config.T).to(device)
+
     print("model load weight done.")
     print(f"Avaliando Modelo {config.pretrained_path.split('/')[-1]} subaquatico {config.underwater_data_name}\n")
     with torch.no_grad():
@@ -674,36 +579,37 @@ def test(config: Dict,epoch):
                     time_start = time.time()
                     sampledImgs = sampler(input_image,ddim=True,
                                           unconditional_guidance_scale=1,ddim_step=config.ddim_step)
-                    time_end=time.time()
-                    print('time cost:', time_end - time_start, "\n")
-
-                    sampledImgs=(sampledImgs+1)/2
                     
-                    fid_score = fid_score.compute_fid(sampledImgs,gt_image)
+                    time_end=time.time()
+                    time_inf.append(time_end - time_start)
+                    #print('time cost:', time_end - time_start, "\n")
+                    print(sampledImgs.min(), sampledImgs.max(), sampledImgs.mean())
+                    sampledImgs = (sampledImgs+1)/2.0
+                    fid_ = fid_score.compute_fid(gt_image, sampledImgs)
+                    fid_list.append(fid_)
                     #print(sampledImgs.shape, res_Imgs.shape, gt_img.shape, input_image.shape)
                     for i in range(sampledImgs.shape[0]):
                         
-                        res_Imgs = np.clip(sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
-                        gt_img = np.clip(gt_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
-                        input_image = np.clip(input_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
-                                              
-                        psnr = PSNR(res_Imgs, gt_img,data_range=255)
-                        uiqm0,uciqe0,uism,uicm,uiconm = nmetrics(res_Imgs)
-                        #uciqe1 = uciqe(nargin=1,loc=res_Imgs)
-
-                        ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255,multichannel=True)
-                        #uciqe2 = uciqe(nargin=1,loc=res_Imgs)#usarei este
-                        uiqm1 = getUIQM(res_Imgs)
+                        res_Imgs = (np.clip(sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255)[:,:,::-1]
+                        gt_img = (np.clip(gt_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255)[:,:,::-1]
+                        #res_Imgs = (sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0)*255)[:,:,::-1]
+                        #gt_img = (gt_image[i].detach().cpu().numpy().transpose(1, 2, 0)*255)[:,:,::-1]
+                        #input_image = np.clip(input_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
                         
-                        uciqe_list.append(uciqe0)  
-                        uiqm_list.append(uiqm1)
+                        psnr = PSNR(res_Imgs, gt_img, data_range=255)
+                        ssim = SSIM(res_Imgs, gt_img, channel_axis=2, data_range=255)
+                        
+                        uiqm, uicm, uism, uiconm, uciqe=non_ref_based(res_Imgs)
+                        print(f"uiqm: {uiqm}, uicm: {uicm}, uism: {uism}, uiconm: {uiconm}, uciqe: {uciqe}, psnr:{psnr}, ssim: {ssim}, fid: {fid_}")
+                        uciqe_list.append(uciqe)  
+                        uiqm_list.append(uiqm)
                         psnr_list.append(psnr)
                         ssim_list.append(ssim)
-                        fid_list.append(fid_score)
                         uism_list.append(uism)
                         uicm_list.append(uicm)
                         uiconm_list.append(uiconm)
-                        cv2.imwrite(save_dir_u+name[i],res_Imgs)
+                        print(res_Imgs.shape, res_Imgs.dtype, res_Imgs.min(), res_Imgs.max(), res_Imgs)
+                        cv2.imwrite(save_dir_u + name[i],res_Imgs)
                         
                         # print(f"""
                         #       uiqm0 : {uiqm0},  
@@ -719,7 +625,7 @@ def test(config: Dict,epoch):
                         #       fid: {fid_score}, 
                         # """)
 
-                #AVERAGE SSIM PSNR UICM UCIQE
+                #AVERAGE SSIM PSNR UICM UCIQE FID UICONM UISM UIQM
                 avg_psnr = sum(psnr_list) / len(psnr_list)
                 avg_ssim = sum(ssim_list) / len(ssim_list)
                 avg_uiqm = sum(uiqm_list) / len(uiqm_list)
@@ -747,6 +653,8 @@ def test(config: Dict,epoch):
                 f.write(str(avg_uicm))
                 f.write('\nuiconm_orgin_avg:')
                 f.write(str(avg_uiconm))
+                f.write('\ntime_inference_avg:')
+                f.write(str(sum(time_inf) / len(time_inf)))
 
 
                 f.close()
@@ -759,7 +667,9 @@ def test(config: Dict,epoch):
         uicm_list =[]
         uiqm_list =[]
         fid_list = []
-        print(f"Avaliando Modelo {config.pretrained_path.split('/')[-1]} subaquatico {config.underwater_data_name}\n")
+        time_inf = []
+
+        print(f"Avaliando Modelo {config.pretrained_path.split('/')[-1]} Atmosferico {config.atmospheric_data_name}\n")
         with tqdm( dataloader_a, dynamic_ncols=True) as tqdmDataLoader:
                 image_num = 0
                 for input_image, gt_image, name in tqdmDataLoader:
@@ -772,29 +682,29 @@ def test(config: Dict,epoch):
                     sampledImgs = sampler(input_image,ddim=True,
                                           unconditional_guidance_scale=1,ddim_step=config.ddim_step)
                     time_end=time.time()
-                    print('time cost:', time_end - time_start, "\n")
+                    time_inf.append(time_end - time_start)
+                    #print('time cost:', time_end - time_start, "\n")
 
-                    sampledImgs=(sampledImgs+1)/2
+                    #sampledImgs=(sampledImgs+1)/2
                     
                     fid_score = fid_score.compute_fid(sampledImgs,gt_image)
                     #print(sampledImgs.shape, res_Imgs.shape, gt_img.shape, input_image.shape)
                     for i in range(sampledImgs.shape[0]):
                         
-                        res_Imgs = np.clip(sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
-                        gt_img = np.clip(gt_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
-                        input_image = np.clip(input_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255#[:,:,::-1]
-                                              
-                        psnr = PSNR(res_Imgs, gt_img,data_range=255)
-                        uiqm0,uciqe0,uism,uicm,uiconm = nmetrics(res_Imgs)
-                        #uciqe1 = uciqe(nargin=1,loc=res_Imgs)
+                        res_Imgs = (np.clip(sampledImgs[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255)[:,:,::-1]
+                        gt_img = (np.clip(gt_image[i].detach().cpu().numpy().transpose(1, 2, 0),0,1)*255)[:,:,::-1]                        
 
-                        ssim = SSIM(res_Imgs, gt_img, channel_axis=2,data_range=255,multichannel=True)
-                        #uciqe2 = uciqe(nargin=1,loc=res_Imgs)#usarei este
-                        uiqm1 = getUIQM(res_Imgs)
+                        psnr = PSNR(res_Imgs, gt_img, data_range=255)
+                        ssim = SSIM(res_Imgs, gt_img, channel_axis=2, data_range=255)
+                        
+                        uiqm, uicm, uism, uiconm, uciqe=non_ref_based(res_Imgs)
+                        #uiqm0, _, uism, uicm, uiconm = nmetrics(res_img)
+                        #uiqm1 = getUIQM(res_img)
+                        #uciqe_ = uciqe(nargin=1,loc=res_img)#usarei este
                         
 
-                        uciqe_list.append(uciqe0)  
-                        uiqm_list.append(uiqm1)
+                        uciqe_list.append(uciqe)  
+                        uiqm_list.append(uiqm)
                         psnr_list.append(psnr)
                         ssim_list.append(ssim)
                         fid_list.append(fid_score)
@@ -826,6 +736,7 @@ def test(config: Dict,epoch):
                 avg_uicm = sum(uicm_list) / len(uicm_list)
                 avg_fid = sum(fid_list) / len(fid_list)
                 avg_uiconm = sum(uiconm_list) / len(uiconm_list)
+                
                         
                 f = open(save_txt_name_a, 'w+')
 
@@ -845,6 +756,8 @@ def test(config: Dict,epoch):
                 f.write(str(avg_uicm))
                 f.write('\nuiconm_orgin_avg:')
                 f.write(str(avg_uiconm))
+                f.write('\ntime_inference_avg:')
+                f.write(str(sum(time_inf) / len(time_inf)))
 
 
                 f.close()
@@ -924,7 +837,7 @@ def inference(config: Dict,epoch):
                     time_end=time.time()
                     #print('time cost:', time_end - time_start, "\n")
 
-                    sampledImgs=(sampledImgs+1)/2
+                    sampledImgs=(sampledImgs+1)/2.0
                     
                     fid = fid_score.compute_fid(sampledImgs,gt_image)
                     #print(sampledImgs.shape, res_Imgs.shape, gt_img.shape, input_image.shape)
